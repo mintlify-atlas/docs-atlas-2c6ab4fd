@@ -1,0 +1,93 @@
+---
+title: "Webhooks Overview"
+description: "Understand how Condo webhooks notify external systems when data changes, the payload format, delivery semantics, and security model."
+---
+
+Webhooks let external systems receive real-time notifications whenever data changes inside Condo. Instead of polling the GraphQL API, you register an endpoint and Condo pushes structured JSON payloads to it automatically after each create, update, or delete operation on a subscribed model.
+
+## The `@open-condo/webhooks` package
+
+Webhook support is provided by the `@open-condo/webhooks` package — a [KeystoneJS 5](https://github.com/keystonejs/keystone-5) plugin that can be added to any Keystone-based application in the Condo monorepo. It introduces three database-backed schemas (`Webhook`, `WebhookSubscription`, `WebhookPayload`) and a `webHooked` plugin that you attach to any model you want to observe.
+
+<CardGroup cols={2}>
+  <Card title="Webhook" icon="link">
+    Stores the integration's display name, the target URL, and the service user whose GraphQL session is used to fetch payload data.
+  </Card>
+  <Card title="WebhookSubscription" icon="bell">
+    Ties a `Webhook` to a specific model, the GraphQL fields to include, optional filters, and delivery state (last sync time, failure count).
+  </Card>
+  <Card title="WebhookPayload" icon="paper-plane">
+    A single outbound HTTP request: the encrypted JSON body, signing secret, delivery status, retry metadata, and the full response from the remote server.
+  </Card>
+  <Card title="webHooked plugin" icon="plug">
+    A one-line addition to any Keystone model schema that registers it for webhook observation and schedules delivery tasks after every `afterChange` hook.
+  </Card>
+</CardGroup>
+
+## How it works
+
+1. You add the `webHooked()` plugin to a model (e.g. `Ticket`).
+2. After each create or update on that model, an `afterChange` hook fires and enqueues a `sendModelWebhooks` background task.
+3. The task queries all active `WebhookSubscription` records for that model, filters changed objects by the subscription's `filters` field, fetches the requested `fields` from GraphQL on behalf of the subscription's user, and writes a `WebhookPayload` record.
+4. A separate delivery worker picks up pending `WebhookPayload` records and POSTs them to the target URL.
+5. Responses, HTTP status codes, and error messages are stored on the `WebhookPayload` record for debugging.
+
+## Supported events
+
+Each model registered with `webHooked()` automatically emits three event types:
+
+| Event | When it fires |
+|---|---|
+| `ModelName.created` | A new record is created |
+| `ModelName.updated` | An existing record is changed |
+| `ModelName.deleted` | A record is soft-deleted |
+
+For example, hooking `Ticket` produces `Ticket.created`, `Ticket.updated`, and `Ticket.deleted`.
+
+Applications can also define additional custom event types by passing an `appWebhooksEventsTypes` array to `getWebhookModels()`.
+
+## Webhook payload format
+
+The body of each outgoing POST request is a JSON object:
+
+```json
+{
+  "hookId": "<webhook-id>",
+  "meta": {
+    "syncedAt": "2024-01-15T10:30:00.000Z"
+  },
+  "data": [
+    {
+      "id": "<record-id>",
+      "updatedAt": "2024-01-15T10:29:59.000Z"
+    }
+  ]
+}
+```
+
+The exact fields in each `data` item are controlled by the `fields` string on the `WebhookSubscription` (e.g. `"id status updatedAt property { address }"`). Only the fields listed there are fetched and forwarded.
+
+Payloads are batched: up to `maxPackSize` objects (default **100**) are included in a single request.
+
+## Delivery semantics
+
+<CardGroup cols={2}>
+  <Card title="Retry with exponential back-off" icon="rotate-right">
+    Failed deliveries are retried at 0 s → 1 min → 5 min → 30 min → 2 h → 6 h → 24 h intervals.
+  </Card>
+  <Card title="7-day TTL" icon="clock">
+    Condo stops retrying a payload after 7 days from creation (`expiresAt`). Records are hard-deleted after 42 days.
+  </Card>
+  <Card title="Automatic circuit-breaker" icon="ban">
+    After 10 consecutive failures the subscription is paused. Support must manually reset `failuresCount` to resume delivery.
+  </Card>
+  <Card title="10-second timeout" icon="stopwatch">
+    Each HTTP request to the remote server must complete within 10 seconds or it is counted as a failure.
+  </Card>
+</CardGroup>
+
+## Security
+
+Sensitive fields (`payload` and `secret`) in `WebhookPayload` are stored as `EncryptedText` using **AES-256-GCM** with **PBKDF2-SHA512** key derivation. The encryption key material comes from the `DATA_ENCRYPTION_CONFIG` and `DATA_ENCRYPTION_VERSION_ID` environment variables — both are required for the application to start.
+
+The `secret` field is an HMAC signing key. Your endpoint can use it to verify that a request genuinely originates from Condo.

@@ -1,0 +1,84 @@
+---
+title: "Migrating to v4"
+description: "Upgrade guide for moving from Condo 3.x to 4.x — covers Node.js 22, @open-keystone, Webpack 5, and CSS modules."
+---
+
+## Motivation
+
+The 4.x release updates the server-side stack to:
+
+- Be compatible with modern Node.js hosting platforms such as [Vercel](https://vercel.com) and [Render](https://render.com)
+- Improve application performance
+- Unlock new framework features
+- Close security vulnerabilities in Node.js itself and in dependencies
+
+## Breaking changes
+
+### 1. `@keystonejs` replaced by `@open-keystone`
+
+The upstream `@keystonejs` (keystone-5) packages have been unmaintained for some time. The authors moved to keystone-6, which has a different API and less flexibility, making a direct upgrade impractical.
+
+Condo now uses `@open-keystone`, a fork of keystone-5 maintained by the Condo team. It stays as close as possible to the original API while updating dependencies to address vulnerabilities and support newer Node.js runtimes.
+
+For unmodified deployments, no manual changes are needed — the dependency swap is handled in the codebase. For forks that reference `@keystonejs` packages directly, update those imports to `@open-keystone`.
+
+### 2. Webpack 4 replaced by Webpack 5
+
+The move to `@open-keystone` allowed upgrading `@open-condo/app-admin-ui` and `@open-condo/app-next` to versions that use Webpack 5. The entire repository now uses a single Webpack version.
+
+No action is required for unmodified deployments.
+
+### 3. CSS modules replace emotion for component-level styles
+
+<Warning>
+  If your application imports `.less` or `.css` files at the component level (outside of `_app.tsx`), those imports **will stop working** after upgrading to 4.x.
+</Warning>
+
+Condo previously used [emotion](https://emotion.sh) for overriding styles inline, which sometimes caused a flash-of-unstyled-content effect. The project now uses CSS modules, which are natively supported by modern Next.js.
+
+As part of this change, the deprecated `@zeit/less` and `@zeit/css` packages were removed. `.less` and `.css` files can now only be imported in `_app.tsx`, not at the component level.
+
+**Impact:** If your application uses Condo components (such as `Layout`) that relied on component-level CSS imports, those components will lose their styles after upgrading. Move any such imports to `_app.tsx`.
+
+### 4. Node.js 16 replaced by Node.js 22
+
+All applications now run on **Node.js 22** (current LTS). Update your Dockerfiles and CI environments accordingly.
+
+<Info>
+  Node.js 17 and above updated the bundled OpenSSL version, which removed support for some older encryption algorithms. If you use the default `EncryptionManager` configuration (fields with type `EncryptedText`), no action is required. If you use custom or non-default encryption settings, re-encrypt the affected data before deploying 4.x.
+</Info>
+
+## Dependency updates
+
+The following packages were updated as part of this release:
+
+| Package | Old version | New version |
+|---|---|---|
+| `@keystonejs/*` | — | `@open-keystone/*` (fork) |
+| `Node.js` | 16.x | 22.x |
+| `graphql` | 15.x | 16.x |
+| `apollo-server-express` | 2.x | 3.x |
+| `knex` | 0.95 | 3.1 |
+| `Next.js` | 9.5 | 12.3.7 |
+| `React` | 16.x | 17.0.2 |
+
+For the full changeset, see [pull request #6313](https://github.com/open-condo-software/condo/pull/6313).
+
+## Migration guide
+
+### Unmodified deployments
+
+If you are running an unmodified version of the Condo applications and are not using legacy encryption algorithms, the migration is a redeploy:
+
+1. Update your Dockerfile to use the Node.js 22 base image.
+2. Redeploy the application.
+
+### Forks and custom applications
+
+If you have forked Condo or built custom applications on top of it, work through the breaking changes above:
+
+1. Replace any direct `@keystonejs/*` imports with the equivalent `@open-keystone/*` package.
+2. Move component-level `.css` / `.less` imports to `_app.tsx`.
+3. Verify your encryption configuration is compatible with OpenSSL 3.x (used by Node.js 17+).
+4. Update your Node.js runtime to 22.x.
+5. Test the application, then redeploy.

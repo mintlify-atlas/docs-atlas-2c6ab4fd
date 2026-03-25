@@ -1,0 +1,163 @@
+---
+title: "Contributing"
+description: "How to contribute to Condo, including branch strategy, commit conventions, and the review process."
+---
+
+Contributions are welcome. This guide covers everything you need to know before opening a pull request.
+
+## Branch Strategy
+
+<Steps>
+  <Step title="Create a branch from main">
+    Always branch off `main`:
+
+    ```bash
+    git checkout main
+    git pull
+    git checkout -b feat/DOMA-1234-my-feature
+    ```
+  </Step>
+
+  <Step title="Make your changes">
+    Implement your feature or fix. Follow the [code style guidelines](/developer/project-structure#code-style) and make sure to:
+    - Create migrations if you changed any schema files
+    - Write tests for new behaviour
+    - Run linting before committing
+
+    ```bash
+    yarn lint:code:fix
+    yarn workspace @app/condo test
+    ```
+  </Step>
+
+  <Step title="Push and open a pull request">
+    Push your branch and open a pull request targeting `main`:
+
+    ```bash
+    git push origin feat/DOMA-1234-my-feature
+    ```
+
+    Then open a PR on GitHub from your branch to `main`.
+  </Step>
+</Steps>
+
+## Commit Message Convention
+
+All commits must follow the format:
+
+```
+<type>(<scope>): <subject>
+```
+
+### Types
+
+| Type | When to use |
+| ---- | ----------- |
+| `feat` | New feature |
+| `fix` | Bug fix |
+| `hotfix` | Urgent production fix |
+| `refactor` | Code restructuring without behavior change |
+| `test` | Adding or updating tests |
+| `docs` | Documentation changes |
+| `style` | Code style or formatting changes |
+| `perf` | Performance improvements |
+| `build` | Build system changes |
+| `ci` | CI/CD configuration changes |
+| `chore` | Maintenance tasks |
+| `revert` | Reverting a previous commit |
+
+### Scopes
+
+| Scope | When to use |
+| ----- | ----------- |
+| `global` | Change affects the whole project |
+| `deps` | Dependency updates |
+| `condo` | Changes to the main condo app |
+| `resident-app` | Changes to the resident app |
+| `billing-connector` | Changes to the billing connector |
+| `webhooks`, `apollo`, `billing`, etc. | Package names |
+
+Any app or package name from the `apps/` or `packages/` directories is a valid scope.
+
+### Subject Rules
+
+- Must start with a task number (`DOMA-1234` or `INFRA-1234`), **except** for `hotfix` commits
+- Must contain at least 2 words after the task number
+- Maximum header length: **52 characters**
+- Use lowercase only (no sentence-case, start-case, or all-caps)
+
+### Examples
+
+```bash
+# Feature with task number
+feat(condo): DOMA-1234 add payment integration
+
+# Bug fix with task number
+fix(billing-connector): DOMA-5678 fix receipt generation error
+
+# Urgent fix without task number (hotfix only)
+hotfix(global): fix critical security vulnerability
+
+# Docs update
+docs(condo): DOMA-9012 update migration guide
+```
+
+<Warning>
+  Commits that do not follow this convention will be rejected by the CI pipeline.
+</Warning>
+
+## Testing Before Opening a PR
+
+Run these checks locally before pushing:
+
+```bash
+# Auto-fix code style issues
+yarn lint:code:fix
+
+# Run the full linter (same as CI)
+yarn lint
+
+# Run all tests
+yarn workspace @app/condo test
+
+# Run static security analysis
+yarn analysis
+```
+
+For running tests, you need the app and worker running in separate terminals:
+
+```bash
+# Terminal 1
+yarn workspace @app/condo dev
+
+# Terminal 2
+yarn workspace @app/condo worker
+
+# Terminal 3
+yarn workspace @app/condo test
+```
+
+## Localization
+
+If your change adds or modifies user-facing text, you must add translations for all supported locales. See the localization guide for details.
+
+<Note>
+  UI strings that are missing translations will cause CI lint failures.
+</Note>
+
+## Contributor License Agreement
+
+By submitting a pull request, you agree to transfer all rights, title, and interest in your contribution — including copyright — to the repository owner. This ensures the project can be maintained and licensed freely under the MIT license.
+
+If you do not agree, do not submit a contribution.
+
+## Code Review
+
+- All pull requests require at least one approval from a maintainer.
+- Address all review comments before merging.
+- Keep PRs focused — one feature or fix per PR makes review easier.
+- Open an issue for discussion before starting large changes.
+
+## Questions
+
+Open a GitHub issue for questions or to discuss ideas before implementing them.

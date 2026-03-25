@@ -1,0 +1,166 @@
+---
+title: "News & Notifications"
+description: "Publish announcements to residents, send targeted alerts by property or unit, and manage all notification channels from one place."
+---
+
+Condo provides a two-layer communication system: **News Items** for manager-authored announcements pushed to residents, and a **Notification/Message** infrastructure for all system-generated alerts (ticket updates, billing receipts, etc.).
+
+<CardGroup cols={2}>
+  <Card title="News Items" icon="newspaper">
+    Property managers publish common or emergency announcements to residents of specific buildings or units.
+  </Card>
+  <Card title="Notification Channels" icon="satellite-dish">
+    Push, SMS, email, and Telegram — messages are dispatched across all channels the resident has enabled.
+  </Card>
+  <Card title="Templates" icon="file-lines">
+    Reusable templates speed up publishing routine news such as scheduled outages.
+  </Card>
+  <Card title="Resident Preferences" icon="sliders">
+    Residents and organizations can opt out of specific notification types.
+  </Card>
+</CardGroup>
+
+## News Items
+
+A `NewsItem` is an announcement created by an organization and delivered to residents via push notification. Key fields:
+
+| Field | Description |
+|-------|-------------|
+| `title` | Headline of the announcement |
+| `body` | Full text of the announcement |
+| `type` | `common` or `emergency` |
+| `sendAt` | Scheduled send time (must be in the future) |
+| `validBefore` | Expiry date — residents cannot see the item after this date |
+| `organization` | Publishing organization |
+
+<Warning>
+  Once a news item has been sent, its `title`, `body`, and `scopes` are **locked** — editing is denied with `EDIT_DENIED_ALREADY_SENT`. Plan your content before scheduling.
+</Warning>
+
+### News Types
+
+| Type | Constant | Push Notification Type |
+|------|----------|------------------------|
+| Common | `NEWS_TYPE_COMMON` | `NEWS_ITEM_COMMON_MESSAGE_TYPE` |
+| Emergency | `NEWS_TYPE_EMERGENCY` | `NEWS_ITEM_EMERGENCY_MESSAGE_TYPE` |
+
+Emergency items are displayed with elevated urgency in the resident app.
+
+### News Categories
+
+News items can be tagged with a category to help residents filter their notification feed. Available categories:
+
+`WATER`, `HEATING`, `ELECTRICITY`, `GAS`, `ELEVATORS`, `ELECTRICITY_AND_ELEVATORS`, `UTILITIES`, `TELEPHONE`, `METERS`, `CLEANING`, `INTERCOM`, `SNOW`, `FIRE_PROTECTION`, `OTHER`
+
+## Targeting with Scopes
+
+Every published news item must have at least one `NewsItemScope`. Scopes define **who receives the announcement**.
+
+| Scope Type | Targets |
+|------------|---------|
+| `organization` | All residents across all properties in the organization |
+| `property` | All residents of a specific building |
+| `property_unitType` | All residents of a given unit type within a building |
+| `property_unitType_unitName` | A single specific unit in a building |
+
+The `type` field on the scope is calculated automatically from the combination of `property`, `unitType`, and `unitName` values provided.
+
+<Note>
+  Publishing a news item without any scopes raises a `NO_NEWS_ITEM_SCOPES` error. At least one scope is required.
+</Note>
+
+### Recipient Count Preview
+
+Before publishing, managers can call `GetNewsItemsRecipientsCountersService` to preview how many residents will receive the announcement, broken down by scope.
+
+## News Templates
+
+`NewsItemTemplate` records provide reusable starting points for common announcements. Each template has:
+
+- `name` — Template display name (e.g., "Heating outage due to repairs")
+- `type` — `common` or `emergency`
+- `category` — Suggested category (e.g., `HEATING`)
+- `title` — Pre-filled headline
+- `body` — Pre-filled body text
+- `organization` — `null` for system-wide templates, or scoped to an organization
+
+Managers pick a template from the news creation form; all fields are pre-populated but editable before publishing.
+
+## Publishing a News Item
+
+<Steps>
+  <Step title="Draft the announcement">
+    Fill in `title`, `body`, `type`, and optionally `category`. The system checks for profanity in both fields and rejects content that fails validation.
+  </Step>
+  <Step title="Set scopes">
+    Add one or more `NewsItemScope` records to define the target audience (organization, property, or specific units).
+  </Step>
+  <Step title="Schedule or send immediately">
+    Set `sendAt` to a future date/time, or leave it to send within the default delay window (`SENDING_DELAY_SEC`). Validity can be capped with `validBefore`.
+  </Step>
+  <Step title="News item delivered">
+    An async background task dispatches push notifications to all matching residents. Delivery is tracked per resident via `NewsItemUserRead`.
+  </Step>
+</Steps>
+
+## News Sharing
+
+For multi-organization deployments, `NewsItemSharing` allows a news item from one organization to be shared to others. `GetNewsSharingRecipientsCountersService` and `GetNewsSharingRecipientsService` help identify the audience before sharing.
+
+## System Notifications
+
+Beyond news, Condo sends dozens of automated `Message` records for system events. All messages go through the same transport pipeline.
+
+### Notification Transports
+
+| Transport | Constant | Notes |
+|-----------|----------|-------|
+| Push | `PUSH_TRANSPORT` | Firebase (Android), APNs (iOS), RedStore |
+| SMS | `SMS_TRANSPORT` | Via configured SMS adapters |
+| Email | `EMAIL_TRANSPORT` | HTML templated emails |
+| Telegram | `TELEGRAM_TRANSPORT` | Via `TelegramUserChat` bot integration |
+
+### Message Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `sending` | Queued for delivery |
+| `processing` | Being processed by transport |
+| `sent` | Accepted by transport provider |
+| `delivered` | Confirmed delivered to device |
+| `read` | Opened by recipient |
+| `error` | Delivery failed |
+| `blacklisted` | Recipient opted out |
+| `canceled` | Suppressed before sending |
+| `throttled` | Rate-limited |
+| `disabledByUser` | Disabled via user preferences |
+
+### Push Notification Types
+
+Push notifications support two modes:
+
+- `default` — Visible notification with title and body
+- `silent_data` — Background data payload without visible alert
+
+Device platforms: `android`, `ios`, `web`.
+
+## Resident Notification Preferences
+
+Residents can manage their notification subscriptions through:
+
+- **`NotificationUserSetting`** — Per-message-type opt-in/out for a specific user
+- **`NotificationAnonymousSetting`** — Preferences for users identified only by phone (before app registration)
+- **`MessageUserBlackList`** — Hard block for a specific user and message type
+- **`MessageOrganizationBlackList`** — Organization-level suppression of a message type for a user
+
+## Batch Messaging
+
+For bulk campaigns, `MessageBatch` allows sending a single message type to a large list of recipients in one operation. Batch statuses:
+
+`created` → `processing` → `done` / `failed`
+
+Batch types include `CUSTOM_CONTENT_MESSAGE` (custom push/email/SMS content) and `MOBILE_APP_UPDATE_AVAILABLE_MESSAGE_PUSH`.
+
+## Remote Clients
+
+Push notifications require a registered `RemoteClient` — a device token stored for each resident's device. Tokens are registered via `SyncRemoteClientService` when the resident app starts, and revoked via `DisconnectUserFromRemoteClientService` on logout.

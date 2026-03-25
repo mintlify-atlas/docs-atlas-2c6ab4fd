@@ -1,0 +1,233 @@
+---
+title: "Migrating to v3"
+description: "Upgrade guide for moving from Condo 2.x to 3.x — covers KV storage namespace isolation and Redis-to-Valkey migration."
+---
+
+## Motivation
+
+The 3.x release adds support for any Redis-compatible KV database and introduces per-application key namespacing. Two main drivers:
+
+- **Redis licensing change.** Redis is no longer open source (now source-available), which restricts which versions and updates applications can use. Condo is moving toward [Valkey](https://valkey.io) as the primary KV backend.
+- **Cluster compatibility.** The previous setup used Redis virtual databases (`/0`, `/1`, etc.) to separate applications on a single host. Redis clusters do not support virtual databases. To support sharded clusters without running a separate instance per application, all apps now share one cluster with isolated key namespaces.
+
+## Breaking changes
+
+### 1. `@open-condo/keystone/redis` renamed to `@open-condo/keystone/kv`
+
+The module path has changed to decouple the package name from the underlying storage technology. The [`ioredis`](https://github.com/redis/ioredis) client library (MIT-licensed) is still used internally, so all changes remain compatible with Redis.
+
+Update your imports:
+
+```typescript
+// Before
+const { getKVClient } = require('@open-condo/keystone/redis')
+
+// After
+const { getKVClient } = require('@open-condo/keystone/kv')
+```
+
+### 2. KV storage keys are now prefixed with the app name
+
+Keys written to KV storage are automatically prefixed with the application name derived from `package.json` in `process.cwd()`. The transformation follows these rules:
+
+1. Take the package name (e.g. `@app/resident-app`)
+2. Strip the scope (`resident-app`)
+3. Convert to snake_case (`resident_app`)
+
+No code changes are required — `ioredis` handles the prefix transparently:
+
+```typescript
+// Somewhere in apps/condo/**
+const { getKVClient } = require('@open-condo/keystone/kv')
+const kv = getKVClient()
+await kv.set('key:subkey', 'value1') // stored as "condo:key:subkey"
+const value = await kv.get('key:subkey') // returns 'value1'
+```
+
+```typescript
+// Somewhere in apps/miniapp/**
+const { getKVClient } = require('@open-condo/keystone/kv')
+const kv = getKVClient()
+await kv.set('key:subkey', 'value2') // stored as "miniapp:key:subkey"
+const value = await kv.get('key:subkey') // returns 'value2'
+```
+
+<Note>
+  Bull queue keys now use [hashtags](https://redis.io/blog/redis-clustering-best-practices-with-keys/) to ensure cluster compatibility. For example: `{condo:bull:queue_name}:rest_of_key`. This is handled automatically.
+</Note>
+
+## Installing `@open-condo/migrator`
+
+Before migrating existing KV data, install the migration tool.
+
+<Tabs>
+  <Tab title="From npm">
+    Install the published package globally:
+
+    ```bash
+    npm i -g @open-condo/migrator
+    ```
+  </Tab>
+  <Tab title="Local build">
+    If you already have the condo monorepo checked out:
+
+    <Steps>
+      <Step title="Install monorepo dependencies">
+        ```bash
+        yarn
+        ```
+      </Step>
+      <Step title="Build the migrator">
+        ```bash
+        yarn workspace @open-condo/migrator build
+        ```
+      </Step>
+      <Step title="Sync built package into node_modules">
+        ```bash
+        yarn
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Migration options
+
+### Option 1: Local migration
+
+Use this approach for local development environments.
+
+<Steps>
+  <Step title="Stop all applications and workers">
+    Shut down every running app and worker to prevent writes to KV storage during migration.
+  </Step>
+  <Step title="Run the migrator">
+    From the monorepo root, run the following command and follow the CLI prompts:
+
+    ```bash
+    npx @open-condo/migrator add-apps-kv-prefixes
+    ```
+  </Step>
+  <Step title="Start applications as usual">
+    Run the `migrate` and `dev` / `start` / `worker` scripts for each app.
+  </Step>
+</Steps>
+
+### Option 2: Remote migration with downtime
+
+Use this approach if you can tolerate a few minutes of downtime per application.
+
+<Warning>
+  Take a fresh backup of your KV database before starting. Even though the migrator is fully tested, a backup protects against human error.
+</Warning>
+
+<Note>
+  Internal tests show the migrator can process approximately 3–4 million keys per minute. Use this figure to estimate downtime for your dataset.
+</Note>
+
+This approach lets you migrate one application at a time while others continue running.
+
+<Steps>
+  <Step title="Back up your KV database">
+    Ensure you have a recent backup before proceeding.
+  </Step>
+  <Step title="Migrate each application">
+    For each app, repeat the following sub-steps:
+
+    1. Stop that application's main and worker processes.
+    2. Run the migrator for that specific app, where `<app-name>` is the app identifier (e.g. `condo`, `address-service`):
+
+    ```bash
+    npx @open-condo/migrator add-apps-kv-prefixes -f <app-name>
+    ```
+
+    3. Redeploy the 3.x version (run `migrate` then `start` as usual).
+  </Step>
+</Steps>
+
+### Option 3: Minimal-downtime migration with RedisShake
+
+Use this approach for environments with strict SLAs where even brief downtime is unacceptable. This is an advanced procedure.
+
+The strategy: spin up a second KV instance, use [RedisShake](https://github.com/tair-opensource/RedisShake) to replicate all keys with the new prefixes in real time, then cut over to the new instance at release time.
+
+<Steps>
+  <Step title="Provision a new KV instance">
+    Set up a second Redis or Valkey instance that will become the target after migration.
+  </Step>
+  <Step title="Configure and run RedisShake">
+    Follow the [RedisShake setup instructions](https://github.com/tair-opensource/RedisShake). Use the configuration below as a starting point, adjusting addresses and the `db_hash` mapping to match your application-to-database-index mapping:
+
+    ```toml
+    # shake.toml
+    [sync_reader]
+    cluster = false            # Set to true if the source is a Redis cluster
+    address = "127.0.0.1:6379" # Address of source instance
+    username = ""              # Keep empty if ACL is not in use
+    password = ""              # Keep empty if no authentication is required
+    tls = false
+    sync_rdb = true
+    sync_aof = true
+    prefer_replica = false
+    try_diskless = false
+
+    [redis_writer]
+    cluster = false            # Set to true if target is a Redis cluster
+    address = "127.0.0.1:6380" # Address of target instance
+    username = ""
+    password = ""
+    tls = false
+
+    function = """
+    local news_sharing_old = "news_sharing_greendom:"
+    local bull_default_prefix = "bull:tasks"
+    local bull_low_prefix = "bull:low"
+    local bull_high_prefix = "bull:high"
+    local db_hash = {
+      [0] = "condo:"
+    }
+    local SOURCE_DB = DB
+    for i, index in ipairs(KEY_INDEXES) do
+      local key = ARGV[index]
+      if string.sub(key, 1, #bull_default_prefix) == bull_default_prefix then
+        ARGV[index] = "{" .. db_hash[SOURCE_DB] .. bull_default_prefix .. "}" .. string.sub(key, #bull_default_prefix + 1)
+      elseif string.sub(key, 1, #bull_low_prefix) == bull_low_prefix then
+        ARGV[index] = "{" .. db_hash[SOURCE_DB] .. bull_low_prefix .. "}" .. string.sub(key, #bull_low_prefix + 1)
+      elseif string.sub(key, 1, #bull_high_prefix) == bull_high_prefix then
+        ARGV[index] = "{" .. db_hash[SOURCE_DB] .. bull_high_prefix .. "}" .. string.sub(key, #bull_high_prefix + 1)
+      else
+        ARGV[index] = db_hash[SOURCE_DB] .. key
+      end
+    end
+    shake.call(SOURCE_DB, ARGV)
+    """
+    ```
+
+    Update `db_hash` to reflect your environment. For example, if `condo` uses database index `0` and `address-service` uses index `1`, add `[1] = "address_service:"` to the table.
+
+    Run RedisShake and wait for the initial full sync to complete:
+
+    ```bash
+    ./redis-shake shake.toml
+    ```
+  </Step>
+  <Step title="Remove the protection guard from the source database">
+    Once RedisShake is running in real-time replication mode, run the following on the **source** database to remove the startup guard:
+
+    ```
+    SET data_version 2
+    ```
+
+    RedisShake will replicate this key (with prefix) to the new database, allowing 3.x apps to start.
+  </Step>
+  <Step title="Deploy 3.x applications">
+    Deploy the new application version pointing to the **new** KV instance. Update `KV_URL` / `REDIS_URL` accordingly.
+
+    <Warning>
+      Disable graceful shutdown during the cutover. If old (2.x) and new (3.x) workers overlap, task data may be lost or corrupted. Kill old processes before starting new ones.
+    </Warning>
+  </Step>
+  <Step title="Verify and decommission the old instance">
+    Confirm all applications are working correctly, then shut down the old KV instance.
+  </Step>
+</Steps>

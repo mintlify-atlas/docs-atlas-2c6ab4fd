@@ -1,0 +1,412 @@
+---
+title: "Building a Mini-App"
+description: "Step-by-step guide to creating a new Condo mini-app using the built-in Next.js + KeystoneJS template."
+---
+
+This guide walks you through cloning the `@app/miniapp` template from the Condo monorepo, wiring it up to a local database, and writing your first bridge calls.
+
+## Prerequisites
+
+- Node.js 24.x (via nvm)
+- Yarn 3.2.2+
+- Python 3.x with `Django>=5.2` and `psycopg2-binary>=2.9.10`
+- PostgreSQL 16 running locally or via Docker
+- Redis 6.2 running locally or via Docker
+
+## Project setup
+
+<Steps>
+  <Step title="Start databases">
+    If you are using the Docker Compose setup provided in the Condo monorepo:
+
+    ```bash
+    docker compose --profile dbs up -d
+    ```
+
+    Or start only the databases your mini-app needs:
+
+    ```bash
+    docker-compose up -d postgresdb redis
+    ```
+  </Step>
+
+  <Step title="Create the database">
+    ```bash
+    export DATABASE_NAME="miniapp"
+    docker exec condo_postgresdb_1 bash -c "su postgres -c \"createdb ${DATABASE_NAME}\""
+    ```
+  </Step>
+
+  <Step title="Create the .env file">
+    Create `apps/miniapp/.env` with the following content. Adjust `SERVER_URL` and `SERVICE_LOCAL_PORT` for your setup.
+
+    ```bash
+    export DATABASE_NAME="miniapp"
+    export SERVICE_LOCAL_PORT="3001"
+
+    cat > apps/miniapp/.env << ENDOFFILE
+    DATABASE_URL=postgresql://postgres:postgres@127.0.0.1/${DATABASE_NAME}
+    NODE_ENV=development
+    DISABLE_LOGGING=true
+    COOKIE_SECRET=random
+    SERVER_URL=http://localhost:${SERVICE_LOCAL_PORT}
+    TESTS_FAKE_CLIENT_MODE=true
+    ENDOFFILE
+    ```
+
+    <Note>
+    For production deployments add the Docker Compose-specific variables:
+
+    ```bash
+    DOCKER_FILE_INSTALL_COMMAND=python3 -m pip install 'psycopg2-binary==2.9.10' && python3 -m pip install 'Django==5.2'
+    DOCKER_FILE_BUILD_COMMAND=yarn workspace @app/miniapp build
+    DOCKER_COMPOSE_APP_IMAGE_TAG=miniapp
+    DOCKER_COMPOSE_START_APP_COMMAND=yarn workspace @app/miniapp start
+    DOCKER_COMPOSE_DATABASE_URL=postgresql://postgres:postgres@postgresdb/main
+    DOCKER_COMPOSE_COOKIE_SECRET=random
+    DOCKER_COMPOSE_SERVER_URL=http://localhost:3003
+    ```
+    </Note>
+  </Step>
+
+  <Step title="Install dependencies">
+    From the monorepo root:
+
+    ```bash
+    yarn install
+    ```
+  </Step>
+
+  <Step title="Run database migrations">
+    Apply the initial schema to your new database:
+
+    ```bash
+    yarn workspace @app/miniapp migrate
+    ```
+  </Step>
+
+  <Step title="Start the dev server">
+    ```bash
+    yarn workspace @app/miniapp dev
+    ```
+
+    This runs `build:deps` (builds all `@open-condo/*` packages your mini-app depends on) and then starts the KeystoneJS + Next.js development server.
+  </Step>
+</Steps>
+
+## Project structure
+
+The template follows **Domain Driven Design**. All domain logic lives under `domains/`:
+
+```
+apps/miniapp/
+├── domains/
+│   ├── common/           # Shared components, hooks, utils
+│   │   ├── components/   # React components (AppFrameWrapper, BaseLayout, ...)
+│   │   ├── hooks/        # useLaunchParams and other hooks
+│   │   ├── schema/       # Keystone models
+│   │   └── utils/        # Auth utilities (OIDC, ...)
+│   └── user/             # Example user domain
+├── pages/                # Next.js pages
+├── lang/                 # i18n translation files
+├── migrations/           # Django-style DB migration scripts
+├── schema.graphql        # Generated GraphQL schema (mini-app's own)
+├── condoSchema.graphql   # Generated GraphQL schema (from Condo host)
+└── condoCodegen.yaml     # Codegen config for Condo schema types
+```
+
+| Directory | Purpose |
+|---|---|
+| `constants/` | Shared constants used on client and server |
+| `gql/` | GraphQL queries and mutations |
+| `components/` | React components (client-side) |
+| `schema/` | KeystoneJS schema definitions |
+| `access/` | Access-control rules |
+| `utils/clientSchema` | Client-side data utilities |
+| `utils/serverSchema` | Server-side data utilities |
+
+## Reading launch parameters
+
+Every mini-app needs to know who opened it and in what context. The template ships with a `useLaunchParams` hook that calls `bridge.send('CondoWebAppGetLaunchParams')` once on mount:
+
+```typescript
+// domains/common/hooks/useLaunchParams.ts
+import { useState, useEffect } from 'react'
+import type { ResultResponseData, ErrorResponseData } from '@open-condo/bridge'
+import bridge from '@open-condo/bridge'
+
+type IUseLaunchParams = {
+  loading: boolean
+  error: ErrorResponseData | null
+  context: ResultResponseData<'CondoWebAppGetLaunchParams'> | Record<string, never>
+}
+
+export function useLaunchParams (): IUseLaunchParams {
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<IUseLaunchParams['error']>(null)
+  const [context, setContext] = useState<IUseLaunchParams['context']>({})
+
+  useEffect(() => {
+    bridge
+      .send('CondoWebAppGetLaunchParams')
+      .then(setContext)
+      .catch((err) => {
+        setContext({})
+        setError(err)
+      })
+      .finally(() => setLoading(false))
+  }, [])
+
+  return { loading, error, context }
+}
+```
+
+Use it in any page component:
+
+```typescript
+import { useLaunchParams } from '@miniapp/domains/common/hooks/useLaunchParams'
+
+const MyPage = () => {
+  const { context, loading, error } = useLaunchParams()
+
+  if (loading) return <>Loading...</>
+  if (error) return <>Error: {error.errorMessage}</>
+
+  return <>{context.condoUserId} — {context.condoLocale}</>
+}
+```
+
+## Automatic frame resizing
+
+The `AppFrameWrapper` component (already wired up in `_app.tsx`) uses a `ResizeObserver` to keep the iframe height in sync with your content automatically:
+
+```typescript
+// domains/common/components/AppFrameWrapper.tsx
+import { css, Global } from '@emotion/react'
+import React, { useEffect } from 'react'
+import bridge from '@open-condo/bridge'
+
+const BODY_RESIZE_STYLES = css`
+  body { height: auto; }
+`
+
+export const AppFrameWrapper: React.FC<React.PropsWithChildren> = ({ children }) => {
+  useEffect(() => {
+    const observer = new ResizeObserver((entries) => {
+      if (entries && entries.length) {
+        bridge.send('CondoWebAppResizeWindow', {
+          height: entries[0].target.clientHeight,
+        })
+      }
+    })
+    observer.observe(document.body)
+    return () => observer.unobserve(document.body)
+  }, [])
+
+  return (
+    <>
+      <Global styles={BODY_RESIZE_STYLES} />
+      {children}
+    </>
+  )
+}
+```
+
+Wrap your app in `AppFrameWrapper` in `pages/_app.tsx` so every page is covered:
+
+```typescript
+export default withApollo({ ssr: true })(
+  withIntl({ ssr: true, messagesImporter })(
+    withAuth({ ssr: true, ...customAuthMutations })(
+      withOidcAuth({ resolveBypass })(
+        MyApp
+      )
+    )
+  )
+)
+```
+
+## Using @open-condo/miniapp-utils
+
+Install the package:
+
+<CodeGroup>
+
+```bash npm
+npm install @open-condo/miniapp-utils react react-dom @apollo/client
+```
+
+```bash yarn
+yarn add @open-condo/miniapp-utils react react-dom @apollo/client
+```
+
+</CodeGroup>
+
+### Environment helpers
+
+```typescript
+import { isSSR, isDebug } from '@open-condo/miniapp-utils/helpers/environment'
+
+// Guard browser-only code during SSR
+if (!isSSR()) {
+  console.log(window.location.href)
+}
+
+// Enable verbose logging only in development
+const VERBOSE = isDebug()
+```
+
+### Apollo middleware
+
+The `apollo.ts` helper provides ready-made Apollo link middlewares:
+
+```typescript
+import {
+  getTracingMiddleware,
+  getSSRProxyingMiddleware,
+  prepareSSRContext,
+} from '@open-condo/miniapp-utils/helpers/apollo'
+import { ApolloClient, InMemoryCache, from, HttpLink } from '@apollo/client'
+
+const client = new ApolloClient({
+  link: from([
+    getTracingMiddleware({
+      serviceUrl: process.env.SERVER_URL,
+      codeVersion: process.env.npm_package_version,
+    }),
+    getSSRProxyingMiddleware({
+      apiUrl: process.env.SERVER_URL + '/api/graphql',
+      proxyId: process.env.PROXY_ID,
+      proxySecret: process.env.PROXY_SECRET,
+    }),
+    new HttpLink({ uri: '/api/graphql' }),
+  ]),
+  cache: new InMemoryCache(),
+})
+```
+
+### Page action handlers
+
+Use `useSetPageActionsHandlers` from `@open-condo/miniapp-utils` to register host-rendered action buttons and respond to clicks without managing subscriptions manually:
+
+```typescript
+import { useEffect, useState } from 'react'
+import bridge from '@open-condo/bridge'
+import { useSetPageActionsHandlers } from '@open-condo/miniapp-utils/hooks/useSetPageActionsHandlers'
+
+const MyPage = () => {
+  const [actionIds, setActionIds] = useState<string[]>([])
+
+  useEffect(() => {
+    bridge
+      .send('CondoWebAppSetPageActions', {
+        actions: [{ label: 'Save' }, { label: 'Cancel' }],
+      })
+      .then(({ actionIds }) => setActionIds(actionIds))
+  }, [])
+
+  useSetPageActionsHandlers(bridge, {
+    [actionIds[0]]: () => handleSave(),
+    [actionIds[1]]: () => handleCancel(),
+  })
+
+  return <form>...</form>
+}
+```
+
+### Other hooks
+
+```typescript
+import { usePrevious } from '@open-condo/miniapp-utils/hooks/usePrevious'
+
+const [count, setCount] = useState(0)
+const prevCount = usePrevious(count)
+// prevCount holds the value from the previous render
+```
+
+## GraphQL types
+
+The template generates two sets of TypeScript types from GraphQL schemas.
+
+### Mini-app schema types
+
+After modifying your KeystoneJS schema, regenerate types:
+
+```bash
+yarn workspace @app/miniapp maketypes
+```
+
+This runs two sub-commands:
+
+| Command | What it does |
+|---|---|
+| `maketypes:miniapp` | Generates `schema.d.ts` from the mini-app's own KeystoneJS GraphQL schema |
+| `maketypes:condo` | Fetches the Condo host schema and generates `condoSchema.ts` via `condoCodegen.yaml` |
+
+`condoCodegen.yaml` configures `@graphql-codegen` to read the fetched `condoSchema.graphql` and emit TypeScript:
+
+```yaml
+# condoCodegen.yaml
+schema: ./condoSchema.graphql
+generates:
+  ./condoSchema.ts:
+    plugins:
+      - typescript
+```
+
+## Database migrations
+
+Migrations are managed with `kmigrator` (a thin Django wrapper).
+
+```bash
+# Create migration scripts after schema changes
+yarn workspace @app/miniapp makemigrations
+
+# Apply pending migrations
+yarn workspace @app/miniapp migrate
+
+# Roll back the last applied migration
+yarn workspace @app/miniapp migrate:down
+
+# Unlock the migrations table if a previous run was interrupted
+yarn workspace @app/miniapp migrate:unlock
+```
+
+<Warning>
+Always run `makemigrations` after changing any Keystone schema definition, then commit the generated migration file alongside your schema changes.
+</Warning>
+
+## Available scripts
+
+| Script | Command | Description |
+|---|---|---|
+| Development server | `yarn workspace @app/miniapp dev` | Builds deps then starts Next.js + Keystone in watch mode |
+| Production build | `yarn workspace @app/miniapp build` | Creates an optimised production build |
+| Production start | `yarn workspace @app/miniapp start` | Starts the production build |
+| Run tests | `yarn workspace @app/miniapp test` | Runs Jest test suite |
+| Make migrations | `yarn workspace @app/miniapp makemigrations` | Creates new migration scripts |
+| Migrate | `yarn workspace @app/miniapp migrate` | Applies pending migrations |
+| Generate types | `yarn workspace @app/miniapp maketypes` | Regenerates TypeScript types from GraphQL schemas |
+| Create schema | `yarn workspace @app/miniapp createschema` | Scaffolds a new Keystone domain model |
+
+## Deploying
+
+The template is designed to run as a Docker container alongside the Condo host.
+
+1. Set the production environment variables in your deployment environment (see the `.env` template above for the `DOCKER_COMPOSE_*` variables).
+2. Build the Docker image:
+   ```bash
+   docker-compose build
+   ```
+3. Run migrations on first deploy:
+   ```bash
+   docker-compose run app yarn workspace @app/miniapp migrate
+   ```
+4. Start the service:
+   ```bash
+   docker-compose up -d
+   ```
+
+<Tip>
+Register your mini-app in the Condo admin panel after deployment so it appears in the service marketplace for residents and staff.
+</Tip>

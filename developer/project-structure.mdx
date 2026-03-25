@@ -1,0 +1,180 @@
+---
+title: "Project Structure"
+description: "Overview of the Condo monorepo layout, key apps, packages, and domain-driven design conventions."
+---
+
+## Monorepo Overview
+
+Condo is organized as a monorepo using [Yarn workspaces](https://yarnpkg.com/features/workspaces) and [Turborepo](https://turbo.build/repo) for build orchestration. The top-level structure is:
+
+```
+condo/
+├── apps/          # Independent application services
+├── packages/      # Shared internal libraries
+├── bin/           # CLI scripts (prepare, migrations, etc.)
+├── docs/          # Project-level documentation
+└── docker-compose.yml
+```
+
+<Note>
+  Apps are **fully isolated** — they cannot import code from each other. All shared code must live in `packages/`.
+</Note>
+
+## Apps (`/apps/*`)
+
+Each app is a standalone service with its own database, environment, and deployment lifecycle.
+
+| App | Description |
+| --- | ----------- |
+| `condo` | Main property management web app (KeystoneJS + Next.js) |
+| `resident-app` | Resident-facing mobile/web application |
+| `billing-connector` | Billing system integration service |
+| `callcenter` | Call center service |
+| `pos-integration` | Point-of-sale integration |
+| `dev-portal-web` | Developer portal for mini-app builders |
+
+There are 20+ additional specialized apps in the repository.
+
+## Packages (`/packages/*`)
+
+Packages are internal libraries that any app can depend on.
+
+<CardGroup cols={2}>
+  <Card title="@open-condo/ui" icon="palette">
+    The official UI component library. **Use this for all GUI elements** instead of building custom components.
+  </Card>
+  <Card title="@open-condo/icons" icon="icons">
+    Icon library for consistent iconography across apps.
+  </Card>
+  <Card title="@open-condo/keystone" icon="database">
+    Core Keystone.js utilities: schema helpers, logging, test utilities, and more.
+  </Card>
+  <Card title="@open-condo/webhooks" icon="webhook">
+    Webhook functionality that can be added to any app.
+  </Card>
+  <Card title="@open-condo/bridge" icon="link">
+    Bridge utilities for mini-app communication.
+  </Card>
+  <Card title="@open-condo/miniapp-utils" icon="puzzle-piece">
+    Shared utilities for building mini-apps on the Condo platform.
+  </Card>
+</CardGroup>
+
+## Domain-Driven Design in `apps/condo`
+
+The main `condo` application uses **Domain-Driven Design (DDD)** to organise its logic. All business logic lives under `apps/condo/domains/`, split by domain:
+
+```
+apps/condo/domains/
+├── ticket/
+├── billing/
+├── contact/
+├── property/
+├── marketplace/
+├── miniapp/
+├── news/
+├── notification/
+├── user/
+├── organization/
+└── common/          # Shared components and utilities across domains
+```
+
+### Domain Folder Structure
+
+Every domain follows a consistent layout:
+
+```
+<domain>/
+├── access/            # Keystone.js access control rules (server)
+├── constants/         # Shared constants (client + server)
+├── components/        # React components (client)
+├── hooks/             # React hooks (client)
+├── gql/               # GraphQL queries and mutations (client + server)
+├── schema/            # Keystone.js schema models — defines the GQL API (server)
+└── utils/
+    ├── clientSchema/  # Client-side domain utilities
+    ├── serverSchema/  # Server-side domain utilities
+    └── testSchema/    # Test helpers for schema tests
+```
+
+### Key Domains
+
+| Domain | Responsibility |
+| ------ | -------------- |
+| `ticket` | Core ticket lifecycle management |
+| `billing` | Payment tracking and invoice management |
+| `contact` | Resident contact management |
+| `property` | Building and property data |
+| `marketplace` | Service marketplace for contractors |
+| `miniapp` | Extension system for third-party mini-apps |
+| `news` | News and announcements for residents |
+| `notification` | Notification delivery (push, email, SMS) |
+| `user` | Authentication and user management |
+| `organization` | Property management company data |
+| `common` | Base components, form layouts, shared constants |
+
+### Other App Directories
+
+```
+apps/condo/
+├── domains/       # Domain-driven business logic
+├── pages/         # Next.js page components (client)
+├── public/        # Static assets (images, icons)
+├── schema/        # Root-level Keystone schema config
+├── lang/          # i18n translation files
+└── migrations/    # Database migration files
+```
+
+## Adding External Packages
+
+The monorepo maintains a single shared `yarn.lock`, so all apps use the same version of each dependency.
+
+```bash
+# Add a package shared across all apps (preferred for most dependencies)
+yarn add <package> -W
+
+# Add a package to a specific app only
+yarn workspace @app/condo add <package>
+
+# Upgrade packages interactively
+yarn upgrade-interactive --latest
+```
+
+<Warning>
+  Always prefer `yarn add -W` for external dependencies to avoid version conflicts across apps.
+</Warning>
+
+## Code Style
+
+The project enforces consistent style via ESLint. Key rules:
+
+| Rule | Value |
+| ---- | ----- |
+| Indentation | 4 spaces |
+| Quotes | Single quotes (`'`) |
+| Semicolons | Never |
+| Object spacing | Always: `{ foo }` |
+| Trailing commas | Always in multiline arrays/objects |
+| Space before function paren | Always: `function example () {}` |
+
+### Import Order
+
+Imports must be grouped in this order, with a blank line between each group:
+
+```javascript
+import fs from 'fs'                                    // 1. Node built-ins
+
+import React from 'react'                              // 2. External packages
+
+import { getById } from '@open-condo/keystone/schema'  // 3. @open-condo packages
+
+import { MyComponent } from './components'             // 4. Internal / sibling
+```
+
+### Restricted Imports
+
+- Use `pdfmake` instead of `jspdf`
+- Do not import from `@open-keystone/fields*` or `@open-condo/keystone/fields`
+- Use specific lodash sub-module imports: `import get from 'lodash/get'` (not `import { get } from 'lodash'`)
+
+Run `yarn lint:code:fix` to auto-fix most style issues.

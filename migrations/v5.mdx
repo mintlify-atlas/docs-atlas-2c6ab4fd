@@ -1,0 +1,164 @@
+---
+title: "Migrating to v5"
+description: "Upgrade guide for moving from Condo 4.x to 5.x — covers heuristics-based address deduplication and updated news template placeholder format."
+---
+
+## Overview
+
+Version 5.x introduces two independent breaking changes:
+
+1. **Address service** — heuristics-based deduplication replaces key-only matching, with a changed `Address.key` format.
+2. **News templates** — placeholder format changed from `[name]` to `<name>`.
+
+Both require data migrations before or immediately after deploying 5.x code.
+
+---
+
+## Part 1: Address service changes
+
+### Motivation
+
+Previously, `address-service` used `Address.key` as the sole deduplication mechanism. This worked within a single provider, but different providers (Dadata, Google, Pullenti) can produce different keys for the same physical building. As a result, the database could accumulate duplicate `Address` records with no reliable way to detect or resolve cross-provider duplicates.
+
+Version 5.x introduces a provider-agnostic heuristics system. Structured identifiers — FIAS ID, coordinates, Google Place ID, and a fallback key — are extracted from provider responses and stored separately. These heuristics let the system match addresses across providers, reuse existing records, and flag suspicious duplicates for review.
+
+### What changed
+
+#### `Address.key` format
+
+`Address.key` values now carry an explicit heuristic prefix:
+
+| Prefix | Example |
+|---|---|
+| `fias_id:` | `fias_id:550e8400-e29b-41d4-a716-446655440000` |
+| `google_place_id:` | `google_place_id:ChIJN1t_tDeuEmsRUsoyG83frY4` |
+| `coordinates:` | `coordinates:55.751244,37.618423` |
+| `fallback:` | `fallback:<legacy-key-value>` |
+
+Any code that parses `Address.key` directly must be updated to handle the prefixed format. Legacy keys are automatically rewritten to the `fallback:` format by the migration.
+
+#### New `AddressHeuristic` model
+
+A new `AddressHeuristic` model stores the structured identifiers used for cross-provider matching. When an address is resolved:
+
+1. Provider-specific heuristics are extracted from the response.
+2. The system attempts to match an existing address by heuristic reliability.
+3. If a match is found, the existing address is reused and new heuristics are upserted.
+4. If no exact match is found, a new address may still be linked via `possibleDuplicateOf`.
+
+#### New `Address.possibleDuplicateOf` field
+
+The `possibleDuplicateOf` relation on `Address` flags likely duplicates for manual review and merge via the address-service admin UI.
+
+### Migration guide
+
+<Warning>
+  Back up your PostgreSQL database before starting. Do not start application code that depends on `AddressHeuristic` or `Address.possibleDuplicateOf` until the database migrations have been applied.
+</Warning>
+
+#### Upgrade order
+
+<Steps>
+  <Step title="Pull latest code and install dependencies">
+    ```bash
+    git pull origin main
+    yarn install
+    yarn workspace @app/condo build:deps
+    ```
+  </Step>
+  <Step title="Run address-service database migrations">
+    This single command applies all three required migration scripts automatically:
+
+    - `20260212163711-0008_addressheuristichistoryrecord_and_more.js` — creates the `AddressHeuristic` table and adds `Address.possibleDuplicateOf`
+    - `20260311122102-0009_manual_add_fallback_prefix.js` — rewrites legacy `Address.key` values to the `fallback:` format
+    - `20260311162944-0010_manual_create_heuristics.js` — backfills `AddressHeuristic` records and duplicate links from existing address data
+
+    ```bash
+    yarn workspace @app/address-service run migrate
+    ```
+
+    <Note>
+      For large datasets, the backfill step (`0010_manual_create_heuristics`) can take approximately 14 seconds per 10,000 addresses, or 10–15 minutes total for a large database. Actual speed depends on server and database configuration.
+
+      Provider-specific behavior during backfill:
+      - **Dadata**: coordinate heuristics are created only when `meta.data.qc_geo = 0`
+      - **Google**: coordinates are extracted from `meta.provider.rawData.geometry.location.lat/lng`
+    </Note>
+  </Step>
+  <Step title="Review flagged duplicates">
+    Check `Address.possibleDuplicateOf` records in the address-service admin UI and resolve any ambiguous duplicates before starting the application.
+  </Step>
+  <Step title="Start applications">
+    Deploy and start all applications and workers as usual.
+  </Step>
+</Steps>
+
+#### Verification
+
+After migration, run these queries to confirm the migration completed correctly:
+
+<CodeGroup>
+
+```sql Count heuristics
+SELECT COUNT(*) FROM "AddressHeuristic" WHERE "deletedAt" IS NULL;
+```
+
+```sql Check for un-prefixed keys (should return 0)
+SELECT COUNT(*) FROM "Address" WHERE "key" NOT LIKE '%:%';
+```
+
+```sql Count flagged duplicates
+SELECT COUNT(*) FROM "Address" WHERE "possibleDuplicateOf" IS NOT NULL;
+```
+
+</CodeGroup>
+
+The second query must return `0`. A non-zero result means some `Address.key` values were not migrated to the prefixed format.
+
+#### Troubleshooting
+
+**Individual bad heuristics**
+
+If a heuristic causes incorrect matches, manage it directly in the database or via the admin UI:
+- Set `enabled = false` to disable it without deleting.
+- Correct the `value` field.
+- Soft-delete the record by setting `deletedAt`.
+
+**High false-positive rate for Google coordinates**
+
+If `GoogleSearchProvider` creates too many false-positive matches due to imprecise coordinates, remove `HEURISTIC_TYPE_COORDINATES` from `extractHeuristics()` in `GoogleSearchProvider.js`, restore from backup, and rerun the migration.
+
+#### Rollback
+
+To revert the latest address-service migration step:
+
+```bash
+yarn workspace @app/address-service run migrate:down
+```
+
+The heuristic creation and key backfill are part of the migration chain. Re-running `migrate` after a rollback will apply them again.
+
+---
+
+## Part 2: News template placeholder format
+
+### What changed
+
+The placeholder format in `NewsItemTemplate` records changed from square brackets to angle brackets:
+
+| Before | After |
+|---|---|
+| `[address]` | `<address>` |
+| `[unit]` | `<unit>` |
+
+This change is backward-incompatible for existing data. Templates stored with the old `[name]` format will not render correctly after deploying 5.x.
+
+### Migration guide
+
+Run the migration script from the monorepo root before or immediately after deploying 5.x:
+
+```bash
+yarn workspace @app/condo node bin/migrate-news-templates-placeholders
+```
+
+The script rewrites all `NewsItemTemplate` records in the database from the old `[name]` format to `<name>`.

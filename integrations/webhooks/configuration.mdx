@@ -1,0 +1,152 @@
+---
+title: "Configuring Webhooks"
+description: "Step-by-step guide to installing the @open-condo/webhooks package, registering schemas, applying the webHooked plugin, and setting required environment variables."
+---
+
+## Prerequisites
+
+- A Keystone 5 application in the Condo monorepo
+- PostgreSQL database with migrations support
+- Redis (used by the Bull task queue that drives webhook delivery)
+
+<Steps>
+  <Step title="Add the package dependency">
+    Add `@open-condo/webhooks` to your app's dependencies:
+
+    ```bash
+    yarn add @open-condo/webhooks
+    ```
+  </Step>
+
+  <Step title="Set required environment variables">
+    The `WebhookPayload` schema stores the request body and signing secret as encrypted text. The encryption manager is instantiated at module-load time, so **both variables must be present in every environment** — development, CI/CD, and production — including during database migrations.
+
+    ```bash
+    # .env
+    DATA_ENCRYPTION_CONFIG='{"myapp_1":{"algorithm":"aes-256-gcm","secret":"your-32-character-secret-string","compressor":"brotli","keyDeriver":"pbkdf2-sha512"}}'
+    DATA_ENCRYPTION_VERSION_ID='myapp_1'
+    ```
+
+    <Warning>
+      If `DATA_ENCRYPTION_CONFIG` is not set, the app will fail to start with:
+
+      ```
+      Error: env DATA_ENCRYPTION_CONFIG is not present
+          at EncryptionManager._initializeDefaults
+          at new EncryptionManager
+      ```
+
+      This error occurs during app startup, database migrations (`makemigrations`, `migrate`), and any CI/CD step that loads the Keystone schema.
+    </Warning>
+
+    **Encryption config notes:**
+
+    | Field | Value |
+    |---|---|
+    | `algorithm` | `aes-256-gcm` |
+    | `secret` | Exactly 32 characters |
+    | `compressor` | `brotli` |
+    | `keyDeriver` | `pbkdf2-sha512` |
+
+    The object key in `DATA_ENCRYPTION_CONFIG` (e.g. `myapp_1`) must match the value of `DATA_ENCRYPTION_VERSION_ID`. For local development, `bin/prepare.js` generates these values automatically.
+  </Step>
+
+  <Step title="Register webhook schemas">
+    In your Keystone entry point, import `getWebhookModels` and add the returned schemas **after** all domain schemas that use `webHooked()`. The `WebhookSubscription.model` field is built from the list of already-registered models at call time.
+
+    ```javascript
+    const { getWebhookModels } = require('@open-condo/webhooks/schema')
+
+    registerSchemas(keystone, [
+        // ... your domain schemas first
+        getWebhookModels('<path-to-your-schema>.graphql')
+    ])
+    ```
+
+    `getWebhookModels` accepts an optional second argument — an array of custom event type strings:
+
+    ```javascript
+    getWebhookModels('./schema.graphql', ['payment.processed', 'invoice.overdue'])
+    ```
+  </Step>
+
+  <Step title="Apply the webHooked plugin to models">
+    For each model you want to observe, import and apply the `webHooked` plugin:
+
+    <CodeGroup>
+    ```javascript Ticket.js
+    const { webHooked } = require('@open-condo/webhooks/plugins')
+
+    const Ticket = new GQLListSchema('Ticket', {
+        fields: {
+            // ... your field definitions
+        },
+        plugins: [
+            uuided(),
+            versioned(),
+            tracked(),
+            softDeleted(),
+            dvAndSender(),
+            historical(),
+            webHooked(), // <-- add this
+        ],
+    })
+    ```
+
+    ```javascript Payment.js
+    const { webHooked } = require('@open-condo/webhooks/plugins')
+
+    const Payment = new GQLListSchema('Payment', {
+        fields: {
+            // ... your field definitions
+        },
+        plugins: [
+            uuided(),
+            versioned(),
+            tracked(),
+            softDeleted(),
+            dvAndSender(),
+            historical(),
+            webHooked(), // <-- add this
+        ],
+    })
+    ```
+    </CodeGroup>
+
+    The plugin registers the model name and wraps the existing `afterChange` hook to enqueue a `sendModelWebhooks` task after every mutation.
+  </Step>
+
+  <Step title="Run migrations">
+    Generate and apply the database migrations for the three new schemas (`Webhook`, `WebhookSubscription`, `WebhookPayload`):
+
+    ```bash
+    yarn workspace @app/your-app makemigrations
+    yarn workspace @app/your-app migrate
+    ```
+  </Step>
+</Steps>
+
+## Managing webhooks via the admin UI
+
+Once the schemas are registered, you can manage webhooks through the Keystone admin panel at `/admin`:
+
+1. Create a **Webhook** — give it a name, set the target URL, and assign a service user whose session will be used to fetch payload data.
+2. Create a **WebhookSubscription** — link it to the webhook, choose the model, write the `fields` string in GraphQL field-selection syntax (e.g. `id status updatedAt property { address }`), and optionally add `filters` to narrow which records trigger delivery.
+3. Monitor **WebhookPayload** records to inspect delivery status, HTTP response codes, and error messages.
+
+## Subscription field reference
+
+| Field | Type | Description |
+|---|---|---|
+| `webhook` | Relationship | Parent `Webhook` integration config |
+| `url` | URL | Override URL (takes precedence over `webhook.url`) |
+| `model` | Select | The model to subscribe to (must be registered with `webHooked()`) |
+| `fields` | Text | GraphQL field-selection string for the payload |
+| `filters` | JSON | Where-input filters; only matching records are delivered |
+| `maxPackSize` | Integer | Max objects per request (1–100, default 100) |
+| `syncedAt` | DateTime | Timestamp of the last successful sync |
+| `failuresCount` | Integer | Consecutive delivery failures; resets to 0 on success |
+
+<Note>
+  `failuresCount` increments at most once per hour. Once it reaches the threshold (default **10**), delivery is paused and must be manually reset via the admin UI or support.
+</Note>

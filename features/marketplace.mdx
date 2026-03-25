@@ -1,0 +1,166 @@
+---
+title: "Service Marketplace"
+description: "Offer residents value-added services directly in the app — from plumbing to cleaning — with built-in invoicing and online payment."
+---
+
+The Condo Marketplace lets property management organizations offer services to residents directly within the resident app. Organizations can list services, set prices, and send invoices that residents pay online or in cash.
+
+<CardGroup cols={2}>
+  <Card title="Market Items" icon="store">
+    Services or products offered by the organization, organized into a two-level category tree.
+  </Card>
+  <Card title="Invoicing" icon="file-invoice-dollar">
+    Create, publish, and track payment of invoices linked to tickets or issued independently.
+  </Card>
+  <Card title="Price Scopes" icon="tag">
+    Set prices globally for an organization or override them per property.
+  </Card>
+  <Card title="Online & Cash" icon="hand-holding-dollar">
+    Residents pay online through the acquiring integration or indicate cash payment.
+  </Card>
+</CardGroup>
+
+## Market Categories
+
+Services are organized in a **two-level category tree**. Each `MarketCategory` has:
+
+- `name` — Localized category name
+- `image` — Preview image shown in the app
+- `parentCategory` — Optional parent category (maximum depth: 2)
+- `mobileSettings` — Display configuration for the mobile app
+
+<Note>
+  The category tree depth is capped at **2 levels**. Attempting to nest a subcategory more than one level deep raises a `MAXIMUM_DEPTH_REACHED` error.
+</Note>
+
+## Market Items
+
+A `MarketItem` is an individual service or product offered by an organization. Fields:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Service name displayed to residents |
+| `sku` | Stock keeping unit — unique per organization |
+| `description` | Detailed service description |
+| `marketCategory` | Category this item belongs to |
+| `organization` | Owning organization |
+
+SKUs are unique per organization (enforced by a conditional unique constraint). When a `MarketItem` is deleted, all its `MarketItemPrice` records are soft-deleted automatically.
+
+## Pricing & Price Scopes
+
+Prices are stored in `MarketItemPrice` records, which can be scoped at different levels:
+
+| Scope Type | Constant | Applies To |
+|------------|----------|------------|
+| Organization-wide | `MARKETPLACE_PRICE_SCOPE_TYPE_ORGANIZATION` | All properties in the organization |
+| Property-specific | `MARKETPLACE_PRICE_SCOPE_TYPE_PROPERTY` | A single building |
+| Unknown | `MARKETPLACE_PRICE_SCOPE_TYPE_UNKNOWN` | Fallback / unset |
+
+A `MarketPriceScope` record links a price to its scope.
+
+<Warning>
+  Publishing an invoice that references a `MarketItem` with no defined price is forbidden — the system raises `ERROR_PUBLISHING_WITHOUT_DEFINED_PRICES_FORBIDDEN`.
+</Warning>
+
+## Invoices
+
+A `Invoice` (in the marketplace domain) is a payment request sent to a resident for one or more services.
+
+### Invoice Fields
+
+| Field | Description |
+|-------|-------------|
+| `number` | Auto-incremented invoice number |
+| `status` | Current lifecycle status |
+| `paymentType` | `online` or `cash` |
+| `toPay` | Total amount due |
+| `rows` | Line items (name, count, unit price, measure) |
+| `property` / `unitName` / `unitType` | Target resident's address |
+| `clientName` / `clientPhone` | Resident contact details |
+| `contact` | Linked `Contact` record |
+| `ticket` | Optional linked `Ticket` |
+| `currencyCode` | Defaults to `RUB` |
+
+### Invoice Lifecycle
+
+<Steps>
+  <Step title="Draft">
+    Staff creates an invoice in `draft` status. Line items can be freely edited. The invoice is not visible to the resident yet.
+  </Step>
+  <Step title="Published">
+    Staff publishes the invoice. Status moves to `published` and the resident receives a push notification with a payment link.
+
+    - Online invoices: `MARKETPLACE_INVOICE_PUBLISHED_MESSAGE`
+    - Cash invoices: `MARKETPLACE_INVOICE_CASH_PUBLISHED_MESSAGE`
+    - With linked ticket: `MARKETPLACE_INVOICE_WITH_TICKET_PUBLISHED_MESSAGE`
+  </Step>
+  <Step title="Paid">
+    The resident completes payment. Status moves to `paid`. A `paidAt` timestamp is recorded. No further edits are allowed.
+  </Step>
+  <Step title="Canceled">
+    Either party cancels the invoice. Status moves to `canceled`. Invoices not paid within **60 days** of publishing are auto-canceled (`DAYS_TO_CANCEL_PUBLISHED_INVOICES`).
+  </Step>
+</Steps>
+
+### Invoice Status Transitions
+
+```
+draft → published → paid
+draft → canceled
+published → canceled
+```
+
+`paid` and `canceled` are **terminal** states.
+
+### Payment Types
+
+| Type | Constant | Flow |
+|------|----------|------|
+| Online | `INVOICE_PAYMENT_TYPE_ONLINE` | Resident pays via acquiring integration in-app |
+| Cash | `INVOICE_PAYMENT_TYPE_CASH` | Resident pays outside the platform; staff confirms |
+
+### Fees
+
+A default implicit fee of **5%** (`DEFAULT_IMPLICIT_FEE_PERCENT`) is applied to online invoice payments. Organizations can configure their own fee structure.
+
+Minimum line-item price is **10 units** (`MIN_PRICE_VALUE`) in the configured currency.
+
+## Organization Setup
+
+Before marketplace features are available, an organization must complete the marketplace setup (`MARKETPLACE_SETUP_URL_PATH = '/setupMarketplace'`), which includes:
+
+1. Agreeing to marketplace rules and the offer agreement
+2. Configuring banking/recipient details (`InvoiceContext`)
+3. Linking an active acquiring integration context (required for online payments)
+
+Without a finished `AcquiringIntegrationContext`, only cash invoices are allowed.
+
+## Resident Experience
+
+Residents discover and interact with marketplace services through the resident app:
+
+<Steps>
+  <Step title="Browse categories">
+    Residents browse the `MarketCategory` tree to find services offered by their management organization.
+  </Step>
+  <Step title="Request a service">
+    Residents can request a service directly, or staff can create an invoice on their behalf (optionally linked to an existing ticket).
+  </Step>
+  <Step title="Receive invoice">
+    A push notification arrives with a payment link. Online payment redirects to the acquiring provider's checkout.
+  </Step>
+  <Step title="Pay">
+    Resident pays online (card) or confirms cash payment. The invoice status updates to `paid`.
+  </Step>
+</Steps>
+
+## Integration with Tickets
+
+Invoices can be linked to an existing `Ticket` via the `ticket` field. This ties the service order to the originating maintenance request, giving both staff and residents a complete picture of the work and its cost.
+
+When a ticket link is set, push notifications use the `WITH_TICKET` message types, and the app presents both the ticket and invoice in context.
+
+## Marketplace Settings
+
+`MarketSetting` holds global marketplace configuration for the organization, including mobile display preferences and payment rules.

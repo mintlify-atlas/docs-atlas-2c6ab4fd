@@ -1,0 +1,194 @@
+---
+title: "Testing"
+description: "How to run tests, understand test structure, and follow testing best practices in the Condo codebase."
+---
+
+## Test Runner
+
+Condo uses [Jest](https://jestjs.io) with the Jasmine2 test runner. Tests live alongside the code they test, inside each domain folder.
+
+## Test Projects
+
+The Jest configuration (`apps/condo/jest.config.js`) defines three separate test projects:
+
+| Project | File Pattern | Purpose |
+| ------- | ------------ | ------- |
+| `schema tests` | `domains/**/schema/*.test.js` | Keystone schema integration tests |
+| `schema specs` | `domains/**/schema/**/*.spec.[tj]s` | Unit tests for schema utilities |
+| `main` | All other `.spec.[tj]s` files | General unit and integration tests |
+
+### File Naming Conventions
+
+- **`*.test.js`** — Schema integration tests. Use Keystone test utilities and run against a real database.
+- **`*.spec.js` / `*.spec.ts`** — Unit tests. Mock dependencies and test logic in isolation.
+
+## Running Tests
+
+```bash
+# Run all tests
+yarn workspace @app/condo test
+
+# Run a specific test file
+yarn workspace @app/condo test User.test.js
+```
+
+<Warning>
+  Running all tests takes a significant amount of time. Use specific file names during development.
+</Warning>
+
+## Test Modes
+
+The `@open-condo/keystone/test.utils` package supports two modes:
+
+<CardGroup cols={2}>
+  <Card title="Real Client Mode" icon="network-wired">
+    Sends actual HTTP/1.1 requests to a running server. Best for end-to-end and production validation testing. This is the default mode.
+  </Card>
+  <Card title="Fake Client Mode" icon="bug">
+    Uses `supertest` to simulate requests within a single process. Best for debugging — lets you set IDE breakpoints anywhere in the request/response cycle.
+  </Card>
+</CardGroup>
+
+```bash
+# Default: real client mode
+yarn workspace @app/condo test
+
+# Fake client mode (single process, easier debugging)
+TESTS_FAKE_CLIENT_MODE=true yarn workspace @app/condo test
+```
+
+<Tip>
+  Use `TESTS_FAKE_CLIENT_MODE=true` when debugging with your IDE. It runs the app and tests in one process, so breakpoints work everywhere.
+</Tip>
+
+## Common Testing Patterns
+
+### Mock Keystone Context
+
+When testing code that receives a Keystone context, mock it with a sudo sub-context:
+
+```javascript
+const mockSudoContext = { /* your context fields */ }
+const mockKeystoneContext = {
+    sudo: jest.fn().mockReturnValue(mockSudoContext),
+}
+
+// Use mockSudoContext in assertions — it's what your code will actually use
+expect(result).toEqual(mockSudoContext.someField)
+```
+
+### Mock Class Instances
+
+When a class is mocked, use a plain mock object and check against it directly. Do not use `toBeInstanceOf` with mocked classes:
+
+```javascript
+// ✅ Correct
+const mockClient = { auth: jest.fn() }
+MyClass.mockImplementation(() => mockClient)
+
+const result = createSomething()
+expect(result).toBe(mockClient)
+
+// ❌ Fails with mocked classes
+expect(result).toBeInstanceOf(MyClass)
+```
+
+### Faker Usage
+
+Use the correct `faker` API for UUID generation:
+
+```javascript
+// ✅ Correct
+const id = faker.datatype.uuid()
+
+// ❌ Wrong — this API does not exist in the version used
+const id = faker.string.uuid()
+```
+
+## Testing Philosophy
+
+### Test the public API, not internals
+
+Do not export constants or helper functions solely for testing purposes. Test behavior through the public interface instead:
+
+```javascript
+// ❌ Don't export internals just for tests
+export const INTERNAL_CONSTANT = 'value'
+
+// ✅ Test behavior through the public API
+export function publicFunction () {
+    const INTERNAL_CONSTANT = 'value'
+    return INTERNAL_CONSTANT + '_processed'
+}
+```
+
+If internal logic is complex enough to need its own tests, refactor it into a separate module with a defined public API.
+
+### Simplicity over coverage
+
+- Simple tests that cover the common path are more maintainable than exhaustive tests covering every edge case.
+- When mocking becomes very complex, it is usually a signal to simplify the code or switch to an integration test.
+- Prefer integration tests over exposing internals.
+
+### Mock isolation
+
+Each test should set up its own mocks and tear them down after. Do not share mutable mock state between tests.
+
+## Linting
+
+```bash
+# Lint the entire project (runs on CI)
+yarn lint
+
+# Lint code only
+yarn lint:code
+
+# Auto-fix code style issues
+yarn lint:code:fix
+
+# Lint styles (CSS/LESS)
+yarn lint:styles
+
+# Lint translations
+yarn lint:translations
+
+# Lint dependencies
+yarn lint:deps
+```
+
+## Static Analysis (SAST)
+
+Condo uses [Semgrep](https://semgrep.dev) for static application security testing. It runs automatically on CI.
+
+```bash
+# Run analysis on the full project
+yarn analysis
+
+# Run analysis on a specific directory
+yarn analysis -d apps/condo
+```
+
+Install Semgrep locally:
+
+<CodeGroup>
+```bash macOS
+brew install semgrep
+```
+```bash pip
+python3 -m pip install semgrep
+```
+</CodeGroup>
+
+### Suppressing False Positives
+
+If Semgrep flags code that is intentionally safe, suppress it with a `// nosemgrep:` comment. Always include an explanation of why the code is safe:
+
+```javascript
+// templatePath is a configured path, not user input
+// nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+const fileContent = await render(path.resolve(templatePath), replaces)
+```
+
+<Warning>
+  Only suppress **false positives**. Never suppress real security issues.
+</Warning>

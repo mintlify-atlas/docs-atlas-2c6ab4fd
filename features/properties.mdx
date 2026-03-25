@@ -1,0 +1,149 @@
+---
+title: "Properties & Buildings"
+description: "Model your building portfolio with addresses, floor plans, and unit maps for accurate ticket routing and resident management."
+---
+
+Properties are the physical buildings and communities that your organization manages. Every ticket, resident, and billing receipt is ultimately tied to a property, making accurate property data essential to all other Condo features.
+
+<CardGroup cols={2}>
+  <Card title="Building Map" icon="building">
+    Define sections, floors, and individual units with Condo's interactive building map editor.
+  </Card>
+  <Card title="Address Resolution" icon="map-pin">
+    Addresses are resolved and normalized via an integrated address service to ensure deduplication.
+  </Card>
+  <Card title="Multiple Types" icon="city">
+    Supports both apartment buildings (`building`) and cottage settlements / villages (`village`).
+  </Card>
+  <Card title="Import" icon="file-import">
+    Bulk-import your property portfolio from Excel files using the built-in export/import tooling.
+  </Card>
+</CardGroup>
+
+## Property Data Model
+
+A `Property` record represents a single address managed by an organization. Core fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `organization` | Relationship | The managing organization |
+| `name` | Text | Human-readable property name (optional) |
+| `type` | Select | `building` or `village` |
+| `address` | Text | Full normalized address string |
+| `addressMeta` | JSON | Structured address data from the address service |
+| `map` | JSON (`BuildingMap`) | Full unit map with sections, floors, and units |
+| `uninhabitedUnitsCount` | Integer | Number of units with no resident assigned |
+| `unitsCount` | Integer | Total unit count derived from the map |
+
+<Note>
+  `address` and `addressMeta` are both required. The `addressMeta` object is populated by the external address resolution service and contains structured data (city, street, house number, coordinates, etc.) used for deduplication and display.
+</Note>
+
+## Address Resolution
+
+Condo integrates an address service plugin (`@open-condo/keystone/plugins/addressService`) that validates and normalizes addresses on property creation and update. This prevents duplicate properties with slightly different spellings of the same address.
+
+If a property with the same address already exists for the organization, the mutation raises a `PROPERTY_ALREADY_EXISTS` error identifying the conflicting record.
+
+## Building Map
+
+The `map` field stores a `BuildingMap` JSON object that describes the full physical layout of the building. This map is used to:
+
+- Present a visual unit selector when creating tickets
+- Validate `unitName` and `unitType` fields on tickets and contacts
+- Display occupancy and section information in the management UI
+
+### Map Structure
+
+<Accordion title="BuildingMap schema overview">
+
+The map follows a strict JSON schema validated against `MapJsonSchema.json`. At the top level it contains:
+
+```json
+{
+  "dv": 1,
+  "type": "building",
+  "sections": [
+    {
+      "id": "...",
+      "name": "Section 1",
+      "type": "section",
+      "floors": [
+        {
+          "id": "...",
+          "name": "1",
+          "index": 1,
+          "units": [
+            {
+              "id": "...",
+              "label": "101",
+              "type": "flat"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "parking": [...]
+}
+```
+
+Unit types come from the shared `SECTION_TYPES` constant and include `flat`, `parking`, `warehouse`, `commercial`, and others.
+
+</Accordion>
+
+Section names, floor indices, and unit labels are extracted server-side via `getUnitsFromSections` to keep the `unitsCount` and `uninhabitedUnitsCount` fields up to date.
+
+## Property Types
+
+| Type | Use Case |
+|------|----------|
+| `building` | Standard multi-unit apartment building or commercial complex |
+| `village` | Cottage settlement or low-rise residential community |
+
+Each type has a corresponding map schema (`BuildingMap` vs. `VillageMap`).
+
+## Organizations & Properties
+
+A property belongs to exactly one organization. When a resident moves in, the system creates a `Resident` record linking the resident's `User` account to both the `Property` and the `Organization` that manages it.
+
+When a property is soft-deleted, Condo automatically:
+
+- Soft-deletes associated `TicketPropertyHint` records
+- Updates ticket address references via `manageTicketPropertyAddressChange`
+- Triggers `softDeletePropertyScopeProperties` to clean up scope assignments
+
+## Importing Properties
+
+The `ExportPropertiesToExcelService` generates an Excel template pre-filled with existing property data. Managers can use this as both an export and an import baseline.
+
+<Steps>
+  <Step title="Export existing list">
+    Use the **Export** action in the Properties section to download your current portfolio as Excel.
+  </Step>
+  <Step title="Add new properties">
+    Fill in new rows following the column structure (address, name, type, etc.).
+  </Step>
+  <Step title="Import">
+    Upload the completed file. Condo validates addresses via the address service before creating records.
+  </Step>
+</Steps>
+
+## Property Hints
+
+Organizations can attach `TicketPropertyHint` records to properties to display guidance text on the ticket creation form. For example, a hint might remind staff of a building's access code or preferred contact procedure.
+
+Hints can be linked to multiple properties at once via `TicketPropertyHintProperty` join records.
+
+## Key Relationships
+
+```
+Property
+  └── organization  → Organization
+  └── map  → BuildingMap (sections → floors → units)
+
+Ticket  → property
+Contact → property
+BillingProperty → property (via address match)
+NewsItemScope → property
+```

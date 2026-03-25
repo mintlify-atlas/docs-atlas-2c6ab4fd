@@ -1,0 +1,220 @@
+---
+title: "GraphQL Authentication"
+description: "Learn how to authenticate with the Condo GraphQL API using email or phone sign-in mutations, session cookies, and service user accounts."
+---
+
+Condo uses **session-based authentication**. A successful sign-in mutation returns a session token that is also set as an HTTP cookie. Subsequent requests carry that cookie to identify the authenticated user and scope all data access to their organization memberships.
+
+## Authentication methods
+
+Condo provides two primary sign-in mutations:
+
+| Mutation | Use case |
+|---|---|
+| `authenticateUserWithEmailAndPassword` | Staff users and service integrations |
+| `authenticateUserWithPhoneAndPassword` | Staff and resident users with a phone-based account |
+
+<Steps>
+  <Step title="Sign in with email and password">
+    Send the sign-in mutation. The `dv` and `sender` fields are required on all write operations. `userType` should be `staff` for human users or `service` for programmatic integrations.
+
+    ```graphql
+    mutation SignIn {
+      authenticateUserWithEmailAndPassword(data: {
+        dv: 1
+        sender: { dv: 1, fingerprint: "my-integration-v1" }
+        userType: staff
+        email: "user@example.com"
+        password: "s3cr3t"
+      }) {
+        token
+        item {
+          id
+          name
+          email
+        }
+      }
+    }
+    ```
+
+    A successful response:
+
+    ```json
+    {
+      "data": {
+        "authenticateUserWithEmailAndPassword": {
+          "token": "<session-token>",
+          "item": {
+            "id": "<user-id>",
+            "name": "Jane Smith",
+            "email": "user@example.com"
+          }
+        }
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Attach the session to subsequent requests">
+    The session is maintained in two ways simultaneously:
+
+    **Cookie (browser clients):** The server sets a `Set-Cookie` header on the sign-in response. Browsers and clients configured with `credentials: 'include'` send the cookie automatically on every subsequent request.
+
+    **Authorization header (server-to-server):** Pass the token returned by the mutation in the `Authorization` header:
+
+    ```bash
+    curl -X POST https://condo.example.com/api/graphql \
+      -H 'Content-Type: application/json' \
+      -H 'Authorization: Bearer <session-token>' \
+      -d '{"query": "{ authenticatedUser { id name } }"}'
+    ```
+  </Step>
+
+  <Step title="Verify the authenticated session">
+    Confirm the session is active and retrieve the current user:
+
+    ```graphql
+    query WhoAmI {
+      authenticatedUser {
+        id
+        name
+        email
+        isAdmin
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Make an authenticated data query">
+    With a valid session, query data scoped to the user's organization:
+
+    ```graphql
+    query MyOrganizations {
+      allOrganizationEmployees(
+        where: { user: { id: "<user-id>" }, isRejected: false, isBlocked: false }
+      ) {
+        organization {
+          id
+          name
+        }
+        role {
+          name
+          canManageTickets
+        }
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Sign in with phone and password
+
+For accounts created with phone numbers, use `authenticateUserWithPhoneAndPassword`:
+
+```graphql
+mutation SignInWithPhone {
+  authenticateUserWithPhoneAndPassword(data: {
+    phone: "+79991234567"
+    password: "s3cr3t"
+  }) {
+    token
+    item {
+      id
+      name
+      phone
+    }
+  }
+}
+```
+
+<Note>
+  Phone numbers must be in **E.164 format** (e.g. `+79991234567`). The `dv`, `sender`, and `userType` fields have defaults for the phone mutation and can be omitted.
+</Note>
+
+## Service user accounts
+
+For programmatic integrations that need persistent, non-human access, Condo supports **service users** (`type: service`). Service users can be created by admins via the `registerNewServiceUser` mutation:
+
+```graphql
+mutation CreateServiceUser {
+  registerNewServiceUser(data: {
+    dv: 1
+    sender: { dv: 1, fingerprint: "admin-cli" }
+    name: "Billing Integration"
+    email: "billing-bot@example.com"
+  }) {
+    id
+    email
+    password
+  }
+}
+```
+
+The returned `password` is generated server-side and returned directly in the response. Store it securely — it is not retrievable afterward via the API.
+
+Service users authenticate with `authenticateUserWithEmailAndPassword` using `userType: service`:
+
+```graphql
+mutation SignInAsService {
+  authenticateUserWithEmailAndPassword(data: {
+    dv: 1
+    sender: { dv: 1, fingerprint: "billing-integration" }
+    userType: service
+    email: "billing-bot@example.com"
+    password: "<generated-password>"
+  }) {
+    token
+    item { id name }
+  }
+}
+```
+
+## Access control model
+
+Every authenticated request is evaluated against two layers of access control:
+
+<CardGroup cols={2}>
+  <Card title="Organization scope" icon="building">
+    Queries and mutations are automatically filtered to records belonging to organizations where the user is a non-rejected, non-blocked employee.
+  </Card>
+  <Card title="Role-based permissions" icon="shield">
+    The `OrganizationEmployee` role controls fine-grained permissions: `canManageTickets`, `canManageProperties`, `canManageEmployees`, and more.
+  </Card>
+  <Card title="UserRightsSet" icon="key">
+    Admins can grant specific users elevated rights (e.g. `canExecuteRegisterNewServiceUser`) without full admin access.
+  </Card>
+  <Card title="Admin override" icon="user-shield">
+    Users with `isAdmin: true` bypass organization-scoped filters and can access all records in the system.
+  </Card>
+</CardGroup>
+
+## Two-factor authentication
+
+If a user has 2FA enabled (`isTwoFactorAuthenticationEnabled: true`), the sign-in mutation returns a `NOT_ENOUGH_AUTH_FACTORS` error containing an `authDetails` object with `availableSecondFactors` and `maskedData`. Submit the `secondFactor` field with the OTP token on the second call:
+
+```graphql
+mutation SignInWith2FA {
+  authenticateUserWithEmailAndPassword(data: {
+    dv: 1
+    sender: { dv: 1, fingerprint: "my-app" }
+    userType: staff
+    email: "user@example.com"
+    password: "s3cr3t"
+    secondFactor: {
+      type: CONFIRM_PHONE_TOKEN
+      value: "<otp-code>"
+    }
+  }) {
+    token
+    item { id }
+  }
+}
+```
+
+## Session configuration
+
+Session secrets are configured via environment variables on the server. The cookie lifetime and secure flags follow standard Keystone 5 session configuration. For production deployments:
+
+- Set a strong `COOKIE_SECRET` environment variable
+- Serve the API over HTTPS and set `secure: true` on the session cookie
+- Configure `sameSite` appropriately for your frontend origin

@@ -1,0 +1,68 @@
+---
+title: "Mini-Apps Overview"
+description: "Embed custom web applications inside the Condo client using the mini-app extension system."
+---
+
+Mini-apps are embedded web applications that run inside the Condo client inside an iframe. They let you extend Condo with custom workflows, third-party integrations, and marketplace features — without modifying the core platform.
+
+The host (Condo) and the mini-app communicate through a **postMessage bridge**. The mini-app sends named method calls; the host processes them and returns a typed response. This decoupling means your mini-app code runs in a fully isolated origin while still having access to Condo context such as the current user, organization, and locale.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│                  Condo client                │
+│                                             │
+│  ┌────────────────────────────────────────┐ │
+│  │              <iframe>                  │ │
+│  │                                        │ │
+│  │           Your mini-app                │ │
+│  │                                        │ │
+│  │   bridge.send('CondoWebApp...')  ──────┼─┼──► postMessage
+│  │                                        │ │
+│  │   bridge.subscribe(listener)   ◄───────┼─┼─── message event
+│  └────────────────────────────────────────┘ │
+└─────────────────────────────────────────────┘
+```
+
+Every call goes through `@open-condo/bridge`, which wraps `postMessage` in a Promise-based API with request tracking and timeouts. The host resolves each request and posts back a `<MethodName>Result` or `<MethodName>Error` event.
+
+## Key packages
+
+<CardGroup cols={2}>
+  <Card title="@open-condo/bridge" icon="bridge" href="/miniapps/bridge">
+    Core postMessage bridge. Provides `send`, `subscribe`, `unsubscribe`, and `supports` — everything a mini-app needs to talk to the Condo host.
+  </Card>
+  <Card title="@open-condo/miniapp-utils" icon="wrench" href="/miniapps/building-a-miniapp">
+    Helper functions, hooks, and Apollo middleware for common mini-app patterns: launch params, SSR proxying, tracing, environment detection, and more.
+  </Card>
+  <Card title="Mini-app template" icon="code" href="/miniapps/building-a-miniapp">
+    The `@app/miniapp` workspace in the monorepo is a ready-to-fork Next.js + KeystoneJS template that wires up auth, Apollo, i18n, and frame resizing for you.
+  </Card>
+  <Card title="Condo marketplace" icon="store" href="/miniapps/building-a-miniapp">
+    Mini-apps are surfaced to end-users through the Condo service marketplace. Any registered mini-app can be discovered and launched by residents and staff.
+  </Card>
+</CardGroup>
+
+## Use cases
+
+- **Marketplace extensions** — add domain-specific screens (billing, inspections, smart-home controls) directly into the resident or staff interface.
+- **Custom workflows** — guide users through multi-step processes that need data from external services, then write results back to Condo via GraphQL.
+- **Third-party integrations** — embed partner dashboards, payment flows, or analytics without redirecting users away from Condo.
+
+## How a request works
+
+1. The mini-app calls `bridge.send('CondoWebAppResizeWindow', { height: 800 })`.
+2. The bridge assigns a `requestId`, serialises the payload, and posts it to the parent frame.
+3. The Condo host receives the message, validates it, and performs the action.
+4. The host posts back `{ type: 'CondoWebAppResizeWindowResult', data: { height: 800 }, requestId }` (or `CondoWebAppResizeWindowError` on failure).
+5. The bridge's internal listener matches the `requestId` and resolves (or rejects) the original Promise.
+
+<Note>
+All bridge calls time out after 1 second by default. `CondoWebAppRequestAuth` has a longer 10-second timeout because it involves a network request on the host side.
+</Note>
+
+## Next steps
+
+- Read the [Bridge API reference](/miniapps/bridge) for the full list of methods and their parameters.
+- Follow the [Building a mini-app](/miniapps/building-a-miniapp) guide to create your own mini-app from the template.

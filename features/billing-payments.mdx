@@ -1,0 +1,148 @@
+---
+title: "Billing & Payments"
+description: "Connect billing integrations, deliver receipts to residents, and process online and recurring payments through acquiring providers."
+---
+
+Condo's billing and payment system connects external accounting systems to residents, delivering monthly receipts and enabling online payment collection through acquiring integrations.
+
+<CardGroup cols={2}>
+  <Card title="Billing Receipts" icon="file-invoice">
+    Monthly invoices imported from billing systems and delivered to residents.
+  </Card>
+  <Card title="Payment Processing" icon="credit-card">
+    Online payments routed through acquiring integrations with full fee breakdown.
+  </Card>
+  <Card title="Recurrent Payments" icon="rotate">
+    Residents can authorize automatic monthly payments for their receipts.
+  </Card>
+  <Card title="Service Marketplace Invoices" icon="shop">
+    One-time invoices for marketplace services, payable online or in cash.
+  </Card>
+</CardGroup>
+
+## Billing Receipts
+
+A `BillingReceipt` is a monthly invoice document for a specific billing account and period. Receipts are imported from an external accounting system via a billing integration connector.
+
+### Key Fields
+
+| Field | Description |
+|-------|-------------|
+| `context` | The `BillingIntegrationOrganizationContext` that imported this receipt |
+| `account` | The `BillingAccount` (resident's utility account number) |
+| `property` | The `BillingProperty` (address-matched to a Condo `Property`) |
+| `period` | The billing month (e.g., `2024-01-01`) |
+| `toPay` | Total amount due as a decimal string |
+| `services` | Line-item breakdown of services billed |
+| `category` | Display category printed on the payment document |
+| `printableNumber` | Human-readable number printed on the receipt PDF |
+| `importId` | Unique identifier from the source billing system |
+| `recipient` | Banking details for the payment recipient |
+
+<Note>
+  `importId` is unique within a billing context and is used to deduplicate receipts on re-import. Once created, `importId` is immutable.
+</Note>
+
+## Billing Accounts
+
+A `BillingAccount` represents a resident's utility account number as it exists in the external billing system.
+
+| Field | Description |
+|-------|-------------|
+| `number` | The account number as-is from the billing source |
+| `globalId` | Universal identifier (e.g., government housing portal ID) |
+| `unitName` | Unit this account belongs to |
+| `fullName` | Account holder's full name |
+| `ownerType` | `person` or other owner classification |
+
+## Billing Integrations
+
+A `BillingIntegration` defines a connector that can pull receipt data from a specific type of billing system (e.g., 1C, municipal billing platforms). Each integration has:
+
+- A `name` and `logo` for display in the management UI
+- A `dataFormat` describing the data schema it provides
+- A `currencyCode` for all receipts from this integration
+- `appUrl` / `instructionExtraLink` for the mini-app or setup guide
+
+To activate an integration for an organization, a `BillingIntegrationOrganizationContext` is created and moves through the setup flow to the `finished` status (`CONTEXT_FINISHED_STATUS`). Only finished contexts allow receipts to be imported and payments to be processed.
+
+## Receipt Registration
+
+Receipts are registered in bulk via `RegisterBillingReceiptsService`. This service:
+
+1. Validates receipt data against the integration's data format schema
+2. Creates or updates `BillingAccount` and `BillingProperty` records
+3. Upserts `BillingReceipt` records (identified by `importId`)
+4. Triggers `BILLING_RECEIPT_AVAILABLE` push notifications to affected residents
+
+PDF receipt files can be attached via `RegisterBillingReceiptFileService`, resulting in a `BILLING_RECEIPT_FILE_ADDED` notification.
+
+## Acquiring & Online Payments
+
+Payments flow through an **acquiring integration** — a payment gateway connector registered as an `AcquiringIntegration`.
+
+### Payment Flow
+
+<Steps>
+  <Step title="Resident initiates payment">
+    The resident selects one or more receipts in the app. Condo creates a `MultiPayment` grouping them together.
+  </Step>
+  <Step title="Payment link generated">
+    `GeneratePaymentLinkService` produces a URL directing the resident to the acquiring provider's hosted checkout page.
+  </Step>
+  <Step title="Payment processed">
+    The acquiring provider charges the resident's card and notifies Condo via a status-change webhook.
+  </Step>
+  <Step title="Payment record updated">
+    Each individual `Payment` record is updated from `INIT` through `PROCESSING` to `DONE` (or `ERROR`).
+  </Step>
+  <Step title="Receipt marked paid">
+    Once the `MultiPayment` completes, linked billing receipts and marketplace invoices reflect the paid status.
+  </Step>
+</Steps>
+
+### Payment Statuses
+
+Payment status constants are defined in `domains/acquiring/constants/payment.js`:
+
+| Status | Meaning |
+|--------|---------|
+| `INIT` | Payment registered, not yet started |
+| `PROCESSING` | Submitted to acquiring provider |
+| `DONE` | Successfully collected |
+| `WITHDRAWN` | Funds transferred to recipient |
+| `ERROR` | Payment failed |
+
+### Fee Structure
+
+Condo supports a detailed fee model on each `Payment`:
+
+- `amount` — Amount allocated to the billing receipt
+- `explicitFee` — Service fee paid by the resident on top of the bill amount (for non-HCS services)
+- `explicitServiceCharge` — Internal service charge for HCS payments
+- `implicitFee` — Fee deducted from the recipient's payout
+- `serviceFee` — Condo's net platform fee after splitting
+
+## Recurrent Payments
+
+Residents can enable **auto-pay** by creating a `RecurrentPaymentContext`, which stores their payment authorization (card token) and payment schedule. Each month, Condo's background worker creates `RecurrentPayment` snapshots and processes them automatically.
+
+Residents receive advance notice notifications (`RECURRENT_PAYMENT_TOMORROW_PAYMENT_MESSAGE`) and outcome notifications on success or failure.
+
+## QR Code Payments
+
+Condo supports scanning payment QR codes from paper receipts via `ValidateQRCodeService`. The service extracts the billing account and amount, allowing the resident to pay directly from the app without manual entry.
+
+Rate limiting applies: up to **10 QR validations** per hour per client.
+
+## Notifications
+
+| Event | Message Type |
+|-------|--------------|
+| New receipt available | `BILLING_RECEIPT_AVAILABLE` |
+| Receipt available (no account) | `BILLING_RECEIPT_AVAILABLE_NO_ACCOUNT` |
+| New receipt file attached | `BILLING_RECEIPT_FILE_ADDED` |
+| Receipt with debt | `BILLING_RECEIPT_ADDED_WITH_DEBT` |
+| Payday reminder | `SEND_BILLING_RECEIPTS_ON_PAYDAY_REMINDER_MESSAGE` |
+| Recurrent payment success | `RECURRENT_PAYMENT_PROCEEDING_SUCCESS_RESULT_MESSAGE` |
+| Recurrent payment tomorrow | `RECURRENT_PAYMENT_TOMORROW_PAYMENT_MESSAGE` |

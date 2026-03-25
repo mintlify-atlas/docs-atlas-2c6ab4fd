@@ -1,0 +1,178 @@
+---
+title: "GraphQL API Overview"
+description: "Explore Condo's full GraphQL API powered by KeystoneJS 5: endpoints, entity types, CRUD operations, filtering, and access control."
+---
+
+Condo exposes a complete GraphQL API built on [KeystoneJS 5](https://github.com/keystonejs/keystone-5). Every domain model — tickets, properties, residents, billing, organizations — is available as a GraphQL type with a consistent set of queries, mutations, and filtering capabilities.
+
+## API endpoint
+
+The GraphQL endpoint is available at:
+
+```
+POST /api/graphql
+```
+
+For the main `condo` application the default port in local development is `4006`, so the full URL is:
+
+```
+http://localhost:4006/api/graphql
+```
+
+All requests must be `POST` with a JSON body containing a `query` (or `mutation`) string and optional `variables` object. Authenticated requests carry a session cookie obtained from one of the sign-in mutations.
+
+## GraphQL Playground
+
+Keystone ships with a built-in GraphQL Playground (GraphiQL) at the same path when the `NODE_ENV` is not `production`:
+
+```
+http://localhost:4006/api/graphql
+```
+
+You can use introspection queries or the Playground UI to browse the full schema, including auto-generated documentation for every field.
+
+## API capabilities
+
+<CardGroup cols={2}>
+  <Card title="Queries" icon="magnifying-glass">
+    List and filter records with `allModels(where: ..., first: ..., skip: ...)`, retrieve counts with `_allModelsMeta`, and fetch single items by ID.
+  </Card>
+  <Card title="Mutations" icon="pen-to-square">
+    Create, update, and batch-create/update records. Soft deletes are performed by setting `deletedAt`. Hard deletes are disabled for most models.
+  </Card>
+  <Card title="Custom mutations" icon="bolt">
+    Domain-specific operations such as `authenticateUserWithEmailAndPassword`, `registerNewServiceUser`, `startConfirmPhoneAction`, and more.
+  </Card>
+  <Card title="Schema introspection" icon="code">
+    Full introspection support. Use the `__schema` and `__type` queries to programmatically discover types, fields, and input shapes.
+  </Card>
+</CardGroup>
+
+## Key entity types
+
+| Type | Description |
+|---|---|
+| `Organization` | Property management company. All data is scoped to an organization. |
+| `Property` | A managed building or residential complex. |
+| `Ticket` | A maintenance or service request raised by a resident or staff. |
+| `Contact` | A resident or contact associated with a property. |
+| `BillingReceipt` | A billing document sent to a resident. |
+| `User` | A platform user (staff, resident, or service account). |
+| `OrganizationEmployee` | Links a `User` to an `Organization` with a specific role. |
+| `B2BApp` | A mini-app integrated into the Condo marketplace. |
+
+## Query patterns
+
+All list queries follow a consistent shape:
+
+```graphql
+query GetTickets {
+  allTickets(
+    where: { organization: { id: "<org-id>" }, status: { name: "open" } }
+    sortBy: [createdAt_DESC]
+    first: 20
+    skip: 0
+  ) {
+    id
+    number
+    details
+    status {
+      name
+    }
+    property {
+      address
+    }
+    createdAt
+    updatedAt
+  }
+}
+```
+
+To get a total count without fetching all rows:
+
+```graphql
+query CountTickets {
+  _allTicketsMeta(
+    where: { organization: { id: "<org-id>" } }
+  ) {
+    count
+  }
+}
+```
+
+## Mutation patterns
+
+Create and update mutations accept an `input` or `data` object. The `dv` (data version) and `sender` fields are required on all mutations that modify data:
+
+```graphql
+mutation CreateTicket {
+  createTicket(data: {
+    dv: 1
+    sender: { dv: 1, fingerprint: "my-integration" }
+    organization: { connect: { id: "<org-id>" } }
+    property: { connect: { id: "<property-id>" } }
+    details: "Water leak in apartment 42"
+    source: { connect: { id: "<source-id>" } }
+    classifier: { connect: { id: "<classifier-id>" } }
+  }) {
+    id
+    number
+    details
+  }
+}
+```
+
+## Filtering
+
+Every model exposes a `WhereInput` type with operators for each field:
+
+| Operator suffix | Meaning |
+|---|---|
+| _(none)_ | Exact match |
+| `_not` | Not equal |
+| `_contains` | Substring match (case-sensitive) |
+| `_contains_i` | Substring match (case-insensitive) |
+| `_starts_with` | Prefix match |
+| `_in` | Value is in list |
+| `_not_in` | Value is not in list |
+| `_gt`, `_lt`, `_gte`, `_lte` | Numeric / date comparisons |
+
+Filters can be combined with `AND` and `OR`:
+
+```graphql
+where: {
+  AND: [
+    { organization: { id: "<org-id>" } }
+    { createdAt_gte: "2024-01-01T00:00:00Z" }
+  ]
+}
+```
+
+## Access control
+
+All data in Condo is organization-scoped. The rules enforced by the API:
+
+- **Organization membership** — users can only read and write data that belongs to organizations they are employees of.
+- **Role-based permissions** — the `OrganizationEmployee` role determines which mutations and fields a user can access within an organization.
+- **Service users** — programmatic integrations use a `SERVICE`-type user account that can be granted elevated rights via `UserRightsSet`.
+- **Soft deletes** — records are never physically removed by default; they are marked with a `deletedAt` timestamp and excluded from list query results automatically.
+
+## Recommended client
+
+[Apollo Client](https://www.apollographql.com/docs/react/) is the recommended library for consuming the Condo GraphQL API. The `@open-condo/apollo` package (used internally throughout the monorepo) provides pre-configured Apollo instances with session cookie handling.
+
+```bash
+yarn add @apollo/client graphql
+```
+
+```typescript
+import { ApolloClient, InMemoryCache, createHttpLink } from '@apollo/client'
+
+const client = new ApolloClient({
+  link: createHttpLink({
+    uri: 'http://localhost:4006/api/graphql',
+    credentials: 'include', // send session cookie
+  }),
+  cache: new InMemoryCache(),
+})
+```

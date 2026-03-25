@@ -1,0 +1,211 @@
+---
+title: 'Docker deployment'
+description: 'Build and deploy Condo using Docker Compose or Dokku.'
+---
+
+Condo ships with a production-ready `Dockerfile` and `docker-compose.yml`. The recommended deployment workflow is to build the image locally, transfer it to your server, and start the stack with Docker Compose.
+
+## Prerequisites
+
+- Docker and Docker Compose installed on both the build machine and the production server
+- A `.env` file configured from `.env.example` (see [Environment variables](/deployment/environment-variables))
+- SSH access to the production server
+
+## Build variables
+
+Two environment variables control what happens inside the image during the build stage:
+
+<ParamField path="DOCKER_FILE_INSTALL_COMMAND" type="string">
+  Shell command run during the image build to install extra system packages or Python dependencies.
+
+  **Example:** `python3 -m pip install 'psycopg2-binary>=2.8.5' && apt-get -y install nano`
+</ParamField>
+
+<ParamField path="DOCKER_FILE_BUILD_COMMAND" type="string">
+  Shell command run during the image build to compile static assets or prepare production files.
+
+  **Example:** `yarn workspace @app/condo build`
+</ParamField>
+
+## Runtime variables
+
+Three variables are required at runtime when the container starts:
+
+<ParamField path="DOCKER_COMPOSE_START_APP_COMMAND" type="string" required>
+  The command Docker uses to start the application inside the container.
+
+  **Example:** `yarn workspace @app/condo start`
+</ParamField>
+
+<ParamField path="DOCKER_COMPOSE_COOKIE_SECRET" type="string" required>
+  A random secret string used by KeystoneJS to sign session cookies.
+
+  **Example:** `AWJfbsbaf!` or any securely generated random string
+</ParamField>
+
+<ParamField path="DOCKER_COMPOSE_SERVER_URL" type="string" required>
+  The public URL of the application. Used by Next.js for API calls from the frontend to the backend.
+
+  **Example:** `https://condo.example.com`
+</ParamField>
+
+## Docker Compose deployment
+
+<Steps>
+  <Step title="Warm the Docker build cache">
+    Speed up subsequent rebuilds by warming the cache first:
+
+    ```bash
+    bash ./bin/warm-docker-cache
+    ```
+  </Step>
+
+  <Step title="Build the production image">
+    ```bash
+    docker-compose build
+    ```
+
+    This produces a tagged image `apps:prod` using the `Dockerfile` at the repo root.
+  </Step>
+
+  <Step title="Transfer the image and configuration to the server">
+    Save and stream the image over SSH, then copy the compose file and environment config:
+
+    ```bash
+    # Transfer the Docker image
+    docker save apps:prod | bzip2 | pv | ssh root@your-server 'bunzip2 | docker load'
+
+    # Copy docker-compose.yml and .env
+    scp ./docker-compose.yml root@your-server:~
+    scp ./.env root@your-server:~
+    ```
+
+    <Note>
+    `pv` is a pipe progress monitor. Install it with `brew install pv` on macOS, or remove it from the command if not available.
+    </Note>
+  </Step>
+
+  <Step title="Start the stack on the server">
+    ```bash
+    ssh root@your-server 'docker-compose down && docker-compose up -d'
+    ```
+  </Step>
+</Steps>
+
+### Full deployment script
+
+```bash
+# 0. Warm docker cache (speeds up rebuild)
+bash ./bin/warm-docker-cache
+
+# 1. Build the production image
+docker-compose build
+
+# 2.1 Transfer the Docker image to the production server
+docker save apps:prod | bzip2 | pv | ssh root@your-server 'bunzip2 | docker load'
+
+# 2.2 Transfer docker-compose.yml and .env
+scp ./docker-compose.yml root@your-server:~
+scp ./.env root@your-server:~
+
+# 3. Restart the stack
+ssh root@your-server 'docker-compose down && docker-compose up -d'
+```
+
+## Customizing the stack
+
+If you need extra containers or want to override existing service definitions, create a `docker-compose.override.yml` file at the repo root. Docker Compose automatically merges it with `docker-compose.yml` at startup.
+
+```yaml
+# docker-compose.override.yml
+services:
+  app:
+    environment:
+      - MY_CUSTOM_VAR=value
+  my-extra-service:
+    image: my-image
+    networks:
+      - app-network
+```
+
+## Dokku deployment
+
+[Dokku](https://dokku.com) is an open-source PaaS that runs on a single server. It supports managed Postgres and Redis plugins and automatic Let's Encrypt TLS.
+
+### Prepare the Dokku server
+
+```bash
+# Install required plugins
+dokku plugin:install https://github.com/dokku/dokku-letsencrypt.git
+dokku plugin:install https://github.com/dokku/dokku-postgres.git postgres
+dokku plugin:install https://github.com/dokku/dokku-redis.git redis
+
+# Configure Let's Encrypt
+dokku config:set --global DOKKU_LETSENCRYPT_EMAIL=your@email.com
+dokku letsencrypt:cron-job --add
+```
+
+### Build and transfer the image
+
+```bash
+export DOCKER_COMPOSE_APP_IMAGE_TAG=condo
+export DOCKER_COMPOSE_APP_IMAGE_VERSION=v1
+
+docker-compose build
+docker save apps:${DOCKER_COMPOSE_APP_IMAGE_TAG}.${DOCKER_COMPOSE_APP_IMAGE_VERSION} \
+  | bzip2 | pv | ssh root@your-dokku-server 'bunzip2 | docker load'
+```
+
+### Create and configure the application
+
+Run these commands on the Dokku server:
+
+```bash
+export APP=condo
+export APP_VERSION=v1
+export DOCKER_IMAGE=apps:condo
+export START_WEB_COMMAND='yarn workspace @app/condo start'
+export START_WORKER_COMMAND='yarn workspace @app/condo worker'
+
+# Create the app
+dokku apps:create ${APP}
+
+# Create and link databases
+POSTGRES_IMAGE='postgres' POSTGRES_IMAGE_VERSION='16' dokku postgres:create ${APP}
+dokku postgres:link ${APP} ${APP}
+
+REDIS_IMAGE='redis' REDIS_IMAGE_VERSION='6.2' dokku redis:create ${APP}
+dokku redis:link ${APP} ${APP}
+
+# Set environment variables
+dokku config:set --no-restart ${APP} NODE_ENV=production
+dokku config:set --no-restart ${APP} SERVER_URL=https://${APP}.example.com
+dokku config:set --no-restart ${APP} START_WEB_COMMAND="${START_WEB_COMMAND}"
+dokku config:set --no-restart ${APP} START_WORKER_COMMAND="${START_WORKER_COMMAND}"
+dokku config:set --no-restart ${APP} \
+  COOKIE_SECRET=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
+
+# Configure networking and NGINX
+dokku checks:disable ${APP}
+dokku proxy:ports-set ${APP} http:80:5000
+dokku nginx:set ${APP} hsts false
+dokku nginx:set ${APP} hsts-include-subdomains false
+```
+
+### Deploy and migrate
+
+```bash
+# Tag and deploy the image
+docker tag ${DOCKER_IMAGE} dokku/${APP}:${APP_VERSION}
+dokku tags:deploy ${APP} ${APP_VERSION}
+
+# Run database migrations
+docker exec -it -u root ${APP}.web.1 yarn workspace @app/condo migrate
+
+# Enable TLS via Let's Encrypt
+dokku letsencrypt ${APP}
+```
+
+<Warning>
+Always run database migrations after deploying a new image to ensure the schema is up to date.
+</Warning>

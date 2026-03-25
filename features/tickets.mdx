@@ -1,0 +1,183 @@
+---
+title: "Ticket Management"
+description: "Track resident requests from submission through resolution with Condo's full-lifecycle ticket system."
+---
+
+Tickets are the core operational unit in Condo. Every maintenance request, complaint, or service inquiry from a resident becomes a ticket that property managers can track, assign, and resolve.
+
+<CardGroup cols={2}>
+  <Card title="Resident Submission" icon="user">
+    Residents submit tickets via the mobile app, web portal, or through staff on their behalf.
+  </Card>
+  <Card title="Assignment & Routing" icon="arrow-right">
+    Tickets are routed to the right employee or team, with optional auto-assignment rules.
+  </Card>
+  <Card title="Status Tracking" icon="chart-line">
+    Six lifecycle statuses keep everyone informed from open to closed.
+  </Card>
+  <Card title="Feedback & Quality" icon="star">
+    Residents rate completed work; managers score quality control.
+  </Card>
+</CardGroup>
+
+## Ticket Lifecycle
+
+<Steps>
+  <Step title="Ticket Created">
+    A ticket enters the system with status `new_or_reopened`. It can be created by a resident through the mobile app (`MOBILE_APP_RESIDENT`), by staff via the web app (`WEB_APP`), by phone call (`CALL`), email (`EMAIL`), or imported from an external CRM (`CRM_IMPORT`).
+  </Step>
+  <Step title="Processing">
+    A manager or dispatcher assigns an executor and moves the ticket to `processing`. The ticket gains an `assignee` (accountable person) and an `executor` (person doing the work).
+  </Step>
+  <Step title="Deferred (optional)">
+    If work cannot start immediately, the ticket moves to `deferred`. By default it stays deferred for 30 days (`DEFAULT_DEFERRED_DAYS`), after which it returns to `new_or_reopened`.
+  </Step>
+  <Step title="Completed">
+    The executor marks the ticket `completed`. Residents receive a push notification and can leave feedback.
+  </Step>
+  <Step title="Closed">
+    After feedback is collected and quality control reviewed, a manager closes the ticket. Closed tickets are terminal — they cannot be reopened.
+  </Step>
+</Steps>
+
+<Note>
+  Tickets can also be `canceled` (declined) at any point. The `canceled` and `closed` statuses are terminal — no further transitions are allowed.
+</Note>
+
+## Ticket Statuses
+
+Condo defines six status types in `domains/ticket/constants.js`:
+
+| Status | Type Constant | Description |
+|--------|--------------|-------------|
+| Open / Reopened | `new_or_reopened` | Newly created or returned after completion |
+| In Progress | `processing` | Actively being worked on |
+| Deferred | `deferred` | Postponed, with an optional `deferredUntil` date |
+| Completed | `completed` | Work finished, awaiting feedback |
+| Canceled | `canceled` | Declined without resolution |
+| Closed | `closed` | Fully resolved and archived |
+
+Allowed transitions follow a strict graph. For example, an open ticket can move to `processing`, `deferred`, or `canceled` — but not directly to `closed`.
+
+## Classifiers
+
+Every ticket is categorized using a three-level classifier hierarchy stored in the required fields `placeClassifier`, `categoryClassifier`, and `problemClassifier`.
+
+- **Place classifier** — Where the issue is (e.g., entrance, apartment, roof)
+- **Category classifier** — What type of work is needed (e.g., plumbing, electrical)
+- **Problem classifier** — Specific problem description
+
+Condo includes AI-assisted classification: the `PredictTicketClassificationService` can suggest classifiers automatically based on the ticket's `details` text.
+
+## Creating a Ticket
+
+Required fields when creating a ticket (`REQUIRED_TICKET_FIELDS`):
+
+```
+property, details, placeClassifier, categoryClassifier, deadline
+```
+
+Additional client contact fields captured at creation:
+
+- `clientName` — Resident's display name
+- `clientPhone` — Normalized E.164 phone number
+- `clientEmail` — Normalized email address
+- `unitName` / `unitType` — Apartment or premises identifier
+
+<Tip>
+  If the phone number matches a verified resident, the system automatically links the ticket to their `Contact` record via `connectContactToTicket`.
+</Tip>
+
+## Assignment
+
+<CardGroup cols={2}>
+  <Card title="Assignee" icon="user-check">
+    The staff member responsible for the ticket outcome. Receives notifications when assigned.
+  </Card>
+  <Card title="Executor" icon="wrench">
+    The person physically performing the work. Can differ from the assignee.
+  </Card>
+</CardGroup>
+
+Organizations can configure `TicketAutoAssignment` rules to automatically assign tickets based on property, classifier, or other criteria.
+
+Bulk updates are supported for `executor` and `assignee` fields via `TicketMultipleUpdateService`.
+
+## Deadlines
+
+Each ticket has a `deadline` field. The default deadline duration is **8 days** (`DEFAULT_TICKET_DEADLINE_DURATION = 'P8D'`), and organizations can configure separate deadlines for paid, emergency, and warranty tickets:
+
+- `defaultDeadlineDuration`
+- `paidDeadlineDuration`
+- `emergencyDeadlineDuration`
+- `warrantyDeadlineDuration`
+
+Overdue tickets set `isCompletedAfterDeadline = true` for reporting.
+
+## Comments & Attachments
+
+Tickets support two comment types defined in `COMMENT_TYPES`:
+
+- `organization` — Visible to staff only
+- `resident` — Visible to the resident
+
+Comments have a maximum length of **700 characters** (`MAX_COMMENT_LENGTH`). Files can be attached via `TicketFile` (on the ticket itself) and `TicketCommentFile` (on individual comments).
+
+## Resident Feedback
+
+Once a ticket is completed, residents can rate the work using `feedbackValue`:
+
+| Value | Meaning |
+|-------|---------|
+| `good` | Satisfied |
+| `bad` | Unsatisfied |
+| `returned` | Requesting rework |
+
+Residents can also provide `feedbackAdditionalOptions` such as `highQuality`, `lowQuality`, `quickly`, or `slowly`, along with a free-text `feedbackComment`.
+
+## Quality Control
+
+Managers can independently score completed work using `qualityControlValue` (`good` or `bad`) with the same set of additional options. Quality control fields are only writable by staff, not residents.
+
+## Incidents
+
+For large-scale issues affecting multiple properties, Condo provides an `Incident` model. Incidents can be linked to multiple properties via `IncidentProperty` and associated with classifiers via `IncidentClassifierIncident`.
+
+## Ticket Sources
+
+The `source` field records how a ticket entered the system:
+
+<Accordion title="All ticket source types">
+
+| Source | Constant |
+|--------|----------|
+| Mobile App (Resident) | `MOBILE_APP_RESIDENT` |
+| Mobile App (Staff) | `MOBILE_APP_STAFF` |
+| Web App | `WEB_APP` |
+| Web App (Resident) | `WEB_APP_RESIDENT` |
+| Phone Call | `CALL` |
+| Email | `EMAIL` |
+| Site | `ORGANIZATION_SITE` |
+| Messenger | `MESSENGER` |
+| Social Network | `SOCIAL_NETWORK` |
+| Remote System | `REMOTE_SYSTEM` |
+| CRM Import | `CRM_IMPORT` |
+| In-Person Visit | `VISIT` |
+
+</Accordion>
+
+## Export & Reporting
+
+Tickets can be exported to Excel via `TicketExportTask`. Document generation (e.g., PDF act of completion) is available through `TicketDocumentGenerationTask`. Saved filter presets can be stored as `TicketFilterTemplate` records.
+
+## Notifications
+
+Condo automatically sends push notifications at key lifecycle events:
+
+- `TICKET_CREATED` — When a new ticket is submitted
+- `TICKET_ASSIGNEE_CONNECTED` — When an assignee is set
+- `TICKET_EXECUTOR_CONNECTED` — When an executor is set
+- `TICKET_STATUS_IN_PROGRESS` — When work begins
+- `TICKET_STATUS_COMPLETED` — When work is finished
+- `TICKET_STATUS_DECLINED` / `TICKET_STATUS_RETURNED` — On decline or return
+- `TICKET_COMMENT_ADDED` — When a new resident-facing comment is posted

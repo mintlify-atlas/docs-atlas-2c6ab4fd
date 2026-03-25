@@ -1,0 +1,47 @@
+---
+title: "Migration Guides"
+description: "How to upgrade Condo across major versions. Each major version may contain breaking changes — follow the relevant guide to migrate safely."
+---
+
+Condo follows [semantic versioning](https://semver.org). Minor and patch releases are backward compatible. **Major versions may introduce breaking changes** to APIs, data formats, or infrastructure requirements.
+
+Before upgrading any major version, review the corresponding guide below. The general process is:
+
+<Steps>
+  <Step title="Back up your data">
+    Take a fresh backup of all databases (PostgreSQL and KV storage) before making any changes.
+  </Step>
+  <Step title="Stop running applications">
+    Shut down all app and worker processes to prevent writes during migration.
+  </Step>
+  <Step title="Run migrations">
+    Apply database and data migrations as described in the version guide.
+  </Step>
+  <Step title="Redeploy">
+    Deploy the new version of the application and start workers.
+  </Step>
+</Steps>
+
+## Migration tool
+
+Some migrations require `@open-condo/migrator`, a dedicated CLI tool for data migrations.
+
+```bash
+npm i -g @open-condo/migrator
+```
+
+See the individual version guides for the specific commands to run.
+
+## Available guides
+
+<CardGroup cols={3}>
+  <Card title="Migrating to v3" icon="database" href="/migrations/v3">
+    Redis to Valkey support and KV key namespace isolation for multi-app setups.
+  </Card>
+  <Card title="Migrating to v4" icon="code" href="/migrations/v4">
+    Node.js 22 LTS, @open-keystone fork, Webpack 5, and CSS modules.
+  </Card>
+  <Card title="Migrating to v5" icon="map-pin" href="/migrations/v5">
+    Heuristics-based address deduplication and updated news template placeholders.
+  </Card>
+</CardGroup>

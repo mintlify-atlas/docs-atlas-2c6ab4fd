@@ -1,0 +1,168 @@
+---
+title: "Database Migrations"
+description: "How to create, run, and manage database migrations in Condo using kmigrator."
+---
+
+## Overview
+
+Condo uses **kmigrator**, a Django-based migration tool, to manage database schema changes. Migrations are stored per-app under `apps/condo/migrations/` and are applied automatically during setup.
+
+<Warning>
+  Never manually edit migration files that have already been merged to `main`. Always recreate them using the CLI commands below.
+</Warning>
+
+## Prerequisites
+
+Before running migrations, ensure:
+
+1. The `DATABASE_URL` environment variable is set:
+   ```bash
+   # Example value (also set automatically by the prepare script)
+   DATABASE_URL=postgresql://postgres:postgres@127.0.0.1/main
+   ```
+2. The database is accessible (running via Docker or directly on the host).
+3. Python dependencies are installed:
+   ```bash
+   pip install Django psycopg2-binary
+   ```
+
+## Common Commands
+
+### Run all pending migrations
+
+Applies all migration files that have not yet been run against the database:
+
+```bash
+yarn workspace @app/condo migrate
+```
+
+### Create migrations after schema changes
+
+After modifying any `schema.ts` file in a domain, generate a new migration file:
+
+```bash
+yarn workspace @app/condo makemigrations
+```
+
+This creates a new file in `apps/condo/migrations/`. Commit this file alongside your schema changes.
+
+### Revert the last migration
+
+```bash
+yarn workspace @app/condo migrate:down
+```
+
+### Unlock the migrations table
+
+If a migration process was interrupted and the migrations table is locked:
+
+```bash
+yarn workspace @app/condo migrate:unlock
+```
+
+## When to Create Migrations
+
+Create a new migration **any time you modify a `schema.ts` file** in any domain. This includes:
+
+- Adding or removing a field
+- Changing a field type or constraint
+- Adding or removing a model
+- Changing a relationship
+
+<Note>
+  Migrations are required even for optional or nullable field additions. The database schema must stay in sync with the Keystone schema definitions.
+</Note>
+
+## Workflow Cases
+
+<Accordion title="Changed a schema during work-in-progress — recreate the migration">
+  If you change a schema file after already generating a migration for it, do not edit the migration file directly. Instead:
+
+  1. Roll back the existing migration:
+     ```bash
+     yarn workspace @app/condo migrate:down
+     ```
+  2. Delete the migration file from `apps/condo/migrations/`.
+  3. Regenerate:
+     ```bash
+     yarn workspace @app/condo makemigrations
+     ```
+</Accordion>
+
+<Accordion title="Merging multiple migration files into one">
+  If your branch contains several migration files that you want to consolidate, do not manually merge their SQL content. The `KMIGRATOR` system comment in each file must match the file exactly.
+
+  Instead:
+
+  1. Roll back each migration, one at a time:
+     ```bash
+     yarn workspace @app/condo migrate:down
+     # repeat until all target migrations are rolled back
+     ```
+  2. Delete the migration files.
+  3. Regenerate a single file:
+     ```bash
+     yarn workspace @app/condo makemigrations
+     ```
+</Accordion>
+
+<Accordion title="Staying in sync after a rebase">
+  If you rebase onto `main` and see that other migrations were merged ahead of yours, your migration number may no longer be sequential.
+
+  1. Roll back your migration:
+     ```bash
+     yarn workspace @app/condo migrate:down
+     ```
+  2. Delete your migration file.
+  3. Regenerate:
+     ```bash
+     yarn workspace @app/condo makemigrations
+     ```
+</Accordion>
+
+## Drop and Recreate (Local Only)
+
+To completely reset your local database and reapply all migrations:
+
+```bash
+docker-compose down &&
+docker-compose up -d postgresdb redis &&
+yarn workspace @app/condo makemigrations &&
+yarn workspace @app/condo migrate
+```
+
+<Warning>
+  Only use this in local development. This permanently destroys all data in the database.
+</Warning>
+
+## Reversible vs. Non-Reversible Migrations
+
+Some migrations cannot be safely reversed. For example, if a migration removes a `NOT NULL` constraint and records without that field are subsequently inserted, rolling back the migration will fail because those records would violate the restored constraint.
+
+Be aware of this when using `migrate:down` in non-trivial cases.
+
+## Common Errors
+
+<Accordion title="CommandError: Conflicting migrations detected">
+  This happens when two branches generated migrations at the same sequence number.
+
+  The preferred fix is to roll back and recreate your migration. In complex cases, you can also run:
+
+  ```bash
+  python apps/condo/.kmigrator/manage.py makemigrations --merge
+  ```
+
+  If prompted for a default value, provide it in Python 3 syntax.
+</Accordion>
+
+<Accordion title="UnicodeDecodeError when running makemigrations">
+  This can be caused by a `.DS_Store` file added by macOS inside the migrations directory:
+
+  ```bash
+  # Check for the file
+  ls -la apps/condo/migrations
+
+  # Remove it
+  rm apps/condo/migrations/.DS_Store
+  ```
+</Accordion>

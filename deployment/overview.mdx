@@ -1,0 +1,86 @@
+---
+title: 'Deployment overview'
+description: 'Options and requirements for deploying Condo in production.'
+---
+
+Condo can be deployed using Docker Compose (the recommended method) or via Dokku on a PaaS-style server. Both approaches rely on the same container image built from the project's `Dockerfile`.
+
+## Requirements
+
+Before deploying, make sure the following services are available:
+
+| Service | Version | Notes |
+| --- | --- | --- |
+| PostgreSQL | 16.x | Primary data store |
+| Redis | 6.2 | Session storage, async tasks, caching |
+| Node.js | 24.x (LTS) | Bundled in the Docker image |
+| S3-compatible storage | any | Optional; required for file uploads |
+
+<Note>
+Valkey (a Redis-compatible alternative) is also supported for caching and key-value workloads. The Valkey cluster runs on ports `7001`, `7002`, and `7003`.
+</Note>
+
+## Deployment options
+
+<CardGroup cols={2}>
+  <Card title="Docker Compose" icon="docker" href="/deployment/docker">
+    Build and run the full application stack with a single `docker-compose build` command. The recommended method for self-hosted production deployments.
+  </Card>
+  <Card title="Dokku" icon="server" href="/deployment/docker#dokku-deployment">
+    Deploy to a Dokku PaaS server. Supports Let's Encrypt TLS, managed Postgres and Redis plugins, and tag-based deploys.
+  </Card>
+</CardGroup>
+
+## Production vs development mode
+
+| Mode | Command | Use case |
+| --- | --- | --- |
+| Development | `yarn workspace @app/condo dev` | Local iteration with hot reload |
+| Production (build) | `yarn workspace @app/condo build` | Compile assets and prepare static files |
+| Production (start) | `yarn workspace @app/condo start` | Serve the compiled application |
+
+In production, the application is built once during the Docker image build stage. The runtime container starts the pre-compiled app via the `DOCKER_COMPOSE_START_APP_COMMAND` environment variable.
+
+## Worker process
+
+The worker is a **separate process** that must run alongside the web server. It handles asynchronous tasks including:
+
+- Sending notifications
+- Importing and exporting data
+- Background jobs powered by Bull (Redis-backed)
+
+Without the worker running, async operations will queue but never execute.
+
+```bash
+yarn workspace @app/condo worker
+```
+
+In a Docker Compose setup, run the worker as a separate container or service using its own `START_WORKER_COMMAND`.
+
+## Default port assignments
+
+Ports are assigned automatically when running `bin/prepare.js` during local development. In production, configure ports explicitly via environment variables.
+
+| Service | Default port |
+| --- | --- |
+| Condo web app (Keystone) | `4006` |
+| Next.js frontend | `3000` |
+| PostgreSQL master | `5432` |
+| PostgreSQL replica | `5433` |
+| Redis | `6379` |
+| Valkey nodes | `7001`, `7002`, `7003` |
+
+<Tip>
+The `PORT` and `SERVER_URL` environment variables control which port the app listens on and what URL it uses for internal API calls from the frontend.
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Docker deployment" icon="box" href="/deployment/docker">
+    Step-by-step guide to building and running Condo with Docker Compose or Dokku.
+  </Card>
+  <Card title="Environment variables" icon="sliders" href="/deployment/environment-variables">
+    Complete reference for all environment variables required and supported by Condo.
+  </Card>
+</CardGroup>

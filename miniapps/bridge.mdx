@@ -1,0 +1,651 @@
+---
+title: "Condo Bridge API"
+description: "Complete API reference for @open-condo/bridge — the postMessage bridge between your mini-app and the Condo host."
+---
+
+`@open-condo/bridge` is the communication layer between a mini-app and the Condo client. It wraps the browser `postMessage` / `message` event pair in a typed, Promise-based API with automatic request tracking and timeouts.
+
+## Installation
+
+<CodeGroup>
+
+```bash npm
+npm install @open-condo/bridge
+```
+
+```bash yarn
+yarn add @open-condo/bridge
+```
+
+</CodeGroup>
+
+### Browser (CDN)
+
+If you are not using a bundler you can load the UMD build directly:
+
+```html
+<script src="https://unpkg.com/@open-condo/bridge/dist/browser.min.js"></script>
+<script>
+  condoBridge.send('CondoWebAppGetLaunchParams').then(console.log)
+</script>
+```
+
+## Quick start
+
+```typescript
+import bridge from '@open-condo/bridge'
+
+// Send a method call and await the response
+const { height } = await bridge.send('CondoWebAppResizeWindow', { height: 800 })
+
+// Check support before calling
+if (bridge.supports('CondoWebAppResizeWindow')) {
+  await bridge.send('CondoWebAppResizeWindow', { height: document.body.scrollHeight })
+}
+```
+
+## API reference
+
+### `bridge.send(method[, params[, timeout]])`
+
+Sends a method call to the Condo host and returns a `Promise` that resolves with the response data or rejects with an error.
+
+Internally, `send` posts a message to `window.parent` with the structure `{ handler, params, type: 'condo-bridge', version }` and correlates the response using an auto-generated `requestId`.
+
+<ParamField path="method" type="string" required>
+  The bridge method name. Must be one of the supported `CondoWebApp*` identifiers listed in the [Methods](#methods) section below.
+</ParamField>
+
+<ParamField path="params" type="object">
+  Method-specific parameters. See each method entry below for the exact shape.
+</ParamField>
+
+<ParamField path="timeout" type="number">
+  Override the default timeout in milliseconds. Defaults to `1000` ms for most methods and `10000` ms for `CondoWebAppRequestAuth`.
+</ParamField>
+
+**Promise-based example**
+
+```typescript
+import bridge from '@open-condo/bridge'
+
+bridge
+  .send('CondoWebAppResizeWindow', { height: 800 })
+  .then((data) => {
+    console.log(data.height) // 800
+  })
+  .catch((error) => {
+    const { errorType, errorReason, errorMessage } = error
+    console.error(errorMessage)
+  })
+```
+
+**Async / await example**
+
+```typescript
+try {
+  const response = await bridge.send('CondoWebAppResizeWindow', { height: 800 })
+  console.log(response.height)
+} catch (err) {
+  console.error(err.errorMessage)
+}
+```
+
+---
+
+### `bridge.subscribe(listener)`
+
+Registers a listener that receives **all** incoming events and responses from the host. Use this when you need low-level access to the event stream, for example to react to host-initiated events such as `CondoWebAppActionClickEvent`.
+
+<ParamField path="listener" type="(event: CondoBridgeSubscriptionEvent) => void" required>
+  A callback that receives every event object. Each event has a `type` string and a `data` object.
+</ParamField>
+
+```typescript
+import bridge from '@open-condo/bridge'
+
+bridge.subscribe((event) => {
+  const { type, data } = event
+
+  if (type === 'CondoWebAppResizeWindowResult') {
+    console.log('Resize confirmed, height:', data.height)
+  } else if (type === 'CondoWebAppResizeWindowError') {
+    const { errorType, errorReason, errorMessage } = data
+    console.error('Resize failed:', errorMessage)
+  } else if (type === 'CondoWebAppActionClickEvent') {
+    console.log('Action clicked:', data.actionId)
+  }
+})
+```
+
+---
+
+### `bridge.unsubscribe(listener)`
+
+Removes a previously registered listener. Always unsubscribe when the component or module that owns the listener is destroyed to avoid memory leaks.
+
+<ParamField path="listener" type="(event: CondoBridgeSubscriptionEvent) => void" required>
+  The exact function reference that was passed to `bridge.subscribe`.
+</ParamField>
+
+```typescript
+import bridge from '@open-condo/bridge'
+
+const myListener = (event) => {
+  console.log(event)
+}
+
+bridge.subscribe(myListener)
+
+// Later, when cleaning up:
+bridge.unsubscribe(myListener)
+```
+
+In React, use `useEffect` for automatic cleanup:
+
+```typescript
+import { useEffect } from 'react'
+import bridge from '@open-condo/bridge'
+
+useEffect(() => {
+  const listener = (event) => {
+    if (event.type === 'CondoWebAppActionClickEvent') {
+      handleAction(event.data.actionId)
+    }
+  }
+
+  bridge.subscribe(listener)
+  return () => bridge.unsubscribe(listener)
+}, [])
+```
+
+---
+
+### `bridge.supports(method)`
+
+Returns `true` if the current runtime environment supports the given method. Use this for capability detection before calling a method that may not be available in all host environments.
+
+<ParamField path="method" type="string" required>
+  The bridge method name to check.
+</ParamField>
+
+```typescript
+import bridge from '@open-condo/bridge'
+
+if (bridge.supports('CondoWebAppResizeWindow')) {
+  bridge.send('CondoWebAppResizeWindow', { height: document.body.scrollHeight })
+}
+```
+
+<Note>
+`bridge.supports` checks against the statically known method list for the current environment. It does **not** make a network or postMessage call.
+</Note>
+
+---
+
+## Methods
+
+Every method follows the same response naming convention:
+
+- Success response event: `<MethodName>Result`
+- Error response event: `<MethodName>Error`
+
+### `CondoWebAppResizeWindow`
+
+Resizes the iframe in the host to the specified height. Use a `ResizeObserver` on `document.body` to keep the frame size in sync automatically.
+
+**Params**
+
+<ParamField path="height" type="number" required>
+  Target height of the iframe in pixels.
+</ParamField>
+
+**Response**
+
+<ResponseField name="height" type="number">
+  The height applied by the host.
+</ResponseField>
+
+```typescript
+const { height } = await bridge.send('CondoWebAppResizeWindow', { height: 600 })
+```
+
+---
+
+### `CondoWebAppGetLaunchParams`
+
+Retrieves the launch context injected by the host when the mini-app was opened. Call this once on mount to identify the current user and their organisation.
+
+**Params**
+
+None.
+
+**Response**
+
+<ResponseField name="condoUserId" type="string | null">
+  Condo user ID, or `null` if the session is anonymous.
+</ResponseField>
+<ResponseField name="condoUserType" type="'staff' | 'resident'">
+  Whether the user is a staff member or a resident.
+</ResponseField>
+<ResponseField name="condoContextEntity" type="'Organization' | 'Resident'">
+  The entity type the mini-app was launched in the context of.
+</ResponseField>
+<ResponseField name="condoContextEntityId" type="string | null">
+  The ID of the context entity.
+</ResponseField>
+<ResponseField name="condoLocale" type="string">
+  BCP 47 locale string (e.g. `'ru'`, `'en'`).
+</ResponseField>
+<ResponseField name="condoDeviceId" type="string">
+  Stable identifier for the current device.
+</ResponseField>
+
+```typescript
+const context = await bridge.send('CondoWebAppGetLaunchParams')
+console.log(context.condoUserId, context.condoLocale)
+```
+
+---
+
+### `CondoWebAppShowNotification`
+
+Displays a toast notification in the host UI.
+
+**Params**
+
+<ParamField path="type" type="'info' | 'warning' | 'error' | 'success'" required>
+  Visual style of the notification.
+</ParamField>
+<ParamField path="message" type="string" required>
+  Primary notification text.
+</ParamField>
+<ParamField path="description" type="string">
+  Optional secondary text shown below the message.
+</ParamField>
+
+**Response**
+
+<ResponseField name="success" type="boolean">
+  `true` when the notification was displayed.
+</ResponseField>
+
+```typescript
+await bridge.send('CondoWebAppShowNotification', {
+  type: 'success',
+  message: 'Payment submitted',
+  description: 'Your receipt will arrive by email.',
+})
+```
+
+---
+
+### `CondoWebAppRedirect`
+
+Navigates the host application or opens a URL in a new tab.
+
+**Params**
+
+<ParamField path="url" type="string" required>
+  The destination URL.
+</ParamField>
+<ParamField path="target" type="'_self' | '_blank'" required>
+  `'_self'` navigates the host; `'_blank'` opens a new browser tab.
+</ParamField>
+
+**Response**
+
+<ResponseField name="success" type="boolean">
+  `true` when the redirect was initiated.
+</ResponseField>
+
+```typescript
+await bridge.send('CondoWebAppRedirect', {
+  url: 'https://example.com/invoice/42',
+  target: '_blank',
+})
+```
+
+---
+
+### `CondoWebAppRequestAuth`
+
+Asks the host to make an authenticated HTTP request on behalf of the mini-app. The host appends its own auth credentials and returns the response body. Useful for calling Condo APIs from the browser without exposing tokens to the mini-app origin.
+
+<Note>
+This method has a 10-second default timeout because the host must perform a network request.
+</Note>
+
+**Params**
+
+<ParamField path="url" type="string" required>
+  The URL the host should fetch.
+</ParamField>
+
+**Response**
+
+<ResponseField name="response" type="object">
+  A clonable response object.
+  <Expandable title="response fields">
+    <ResponseField name="status" type="number">HTTP status code.</ResponseField>
+    <ResponseField name="body" type="string">Response body as a string.</ResponseField>
+    <ResponseField name="url" type="string">Final URL after any redirects.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+```typescript
+const { response } = await bridge.send('CondoWebAppRequestAuth', {
+  url: '/api/v1/me',
+})
+console.log(response.status, JSON.parse(response.body))
+```
+
+---
+
+### `CondoWebAppGetFragment`
+
+Returns the current URL fragment (hash) of the host page. Use this to read routing state the host may encode in the fragment.
+
+**Params**
+
+None.
+
+**Response**
+
+<ResponseField name="fragment" type="string">
+  The current URL fragment, without the leading `#`.
+</ResponseField>
+
+```typescript
+const { fragment } = await bridge.send('CondoWebAppGetFragment')
+```
+
+---
+
+### `CondoWebAppSetPageActions`
+
+Registers one or more action buttons that the host renders in a platform-specific location (for example the bottom action bar on web). The host returns a stable `actionId` for each action. Subscribe to `CondoWebAppActionClickEvent` to receive click callbacks.
+
+**Params**
+
+<ParamField path="actions" type="Action[]" required>
+  Array of action descriptors.
+  <Expandable title="Action fields">
+    <ParamField path="label" type="string">Button label text.</ParamField>
+    <ParamField path="icon" type="string">Icon identifier.</ParamField>
+    <ParamField path="disabled" type="boolean">Whether the action is disabled.</ParamField>
+    <ParamField path="loading" type="boolean">Whether to show a loading indicator.</ParamField>
+  </Expandable>
+</ParamField>
+
+**Response**
+
+<ResponseField name="actionIds" type="string[]">
+  Stable IDs corresponding to each action in the order provided.
+</ResponseField>
+
+```typescript
+const { actionIds } = await bridge.send('CondoWebAppSetPageActions', {
+  actions: [
+    { label: 'Save', icon: 'save' },
+    { label: 'Cancel', disabled: true },
+  ],
+})
+
+// actionIds[0] maps to 'Save', actionIds[1] maps to 'Cancel'
+bridge.subscribe((event) => {
+  if (event.type === 'CondoWebAppActionClickEvent') {
+    if (event.data.actionId === actionIds[0]) {
+      handleSave()
+    }
+  }
+})
+```
+
+---
+
+### `CondoWebAppShowModalWindow`
+
+Opens a modal window in the host that loads a URL (typically another page in the same mini-app).
+
+**Params**
+
+<ParamField path="title" type="string" required>
+  Modal header text.
+</ParamField>
+<ParamField path="url" type="string" required>
+  URL to load inside the modal.
+</ParamField>
+<ParamField path="size" type="'small' | 'big'">
+  Modal size. Defaults to the host's default size.
+</ParamField>
+<ParamField path="initialHeight" type="number">
+  Initial height of the modal iframe in pixels.
+</ParamField>
+
+**Response**
+
+<ResponseField name="modalId" type="string">
+  Identifier for the modal, used with `CondoWebAppUpdateModalWindow` and `CondoWebAppCloseModalWindow`.
+</ResponseField>
+
+```typescript
+const { modalId } = await bridge.send('CondoWebAppShowModalWindow', {
+  title: 'Create invoice',
+  url: '/invoice/new',
+  size: 'big',
+})
+```
+
+---
+
+### `CondoWebAppUpdateModalWindow`
+
+Updates the title or size of an open modal window.
+
+**Params**
+
+<ParamField path="modalId" type="string" required>
+  The `modalId` returned by `CondoWebAppShowModalWindow`.
+</ParamField>
+<ParamField path="data" type="object" required>
+  Fields to update. All fields are optional.
+  <Expandable title="data fields">
+    <ParamField path="title" type="string">New modal title.</ParamField>
+    <ParamField path="size" type="'small' | 'big'">New modal size.</ParamField>
+  </Expandable>
+</ParamField>
+
+**Response**
+
+<ResponseField name="updated" type="boolean">
+  `true` if the modal was found and updated.
+</ResponseField>
+
+```typescript
+await bridge.send('CondoWebAppUpdateModalWindow', {
+  modalId,
+  data: { title: 'Edit invoice', size: 'big' },
+})
+```
+
+---
+
+### `CondoWebAppCloseModalWindow`
+
+Programmatically closes a modal opened by `CondoWebAppShowModalWindow`.
+
+**Params**
+
+<ParamField path="modalId" type="string" required>
+  The `modalId` of the modal to close.
+</ParamField>
+
+**Response**
+
+<ResponseField name="modalId" type="string">
+  The ID of the closed modal.
+</ResponseField>
+<ResponseField name="success" type="boolean">
+  `true` if the modal was found and closed.
+</ResponseField>
+
+```typescript
+await bridge.send('CondoWebAppCloseModalWindow', { modalId })
+```
+
+---
+
+### `CondoWebAppShowProgressBar`
+
+Displays a progress bar in the host UI for long-running background tasks.
+
+**Params**
+
+<ParamField path="message" type="string" required>
+  Primary label shown alongside the progress bar.
+</ParamField>
+<ParamField path="description" type="string">
+  Optional secondary description.
+</ParamField>
+<ParamField path="externalTaskId" type="string">
+  An ID from your own task-tracking system, for correlation.
+</ParamField>
+
+**Response**
+
+<ResponseField name="barId" type="string">
+  Identifier for the progress bar, used with `CondoWebAppUpdateProgressBar`.
+</ResponseField>
+
+```typescript
+const { barId } = await bridge.send('CondoWebAppShowProgressBar', {
+  message: 'Importing residents…',
+  externalTaskId: myTask.id,
+})
+```
+
+---
+
+### `CondoWebAppUpdateProgressBar`
+
+Updates the state of an active progress bar.
+
+**Params**
+
+<ParamField path="barId" type="string" required>
+  The `barId` returned by `CondoWebAppShowProgressBar`.
+</ParamField>
+<ParamField path="data" type="object" required>
+  Fields to update. All fields are optional.
+  <Expandable title="data fields">
+    <ParamField path="message" type="string">Updated label.</ParamField>
+    <ParamField path="description" type="string">Updated description.</ParamField>
+    <ParamField path="progress" type="number">Completion percentage (0–100).</ParamField>
+    <ParamField path="status" type="'completed' | 'error'">Terminal status. Set when the task finishes.</ParamField>
+  </Expandable>
+</ParamField>
+
+**Response**
+
+<ResponseField name="updated" type="boolean">
+  `true` if the bar was found and updated.
+</ResponseField>
+
+```typescript
+await bridge.send('CondoWebAppUpdateProgressBar', {
+  barId,
+  data: { progress: 75, message: 'Processing…' },
+})
+
+// Mark complete
+await bridge.send('CondoWebAppUpdateProgressBar', {
+  barId,
+  data: { status: 'completed', progress: 100 },
+})
+```
+
+---
+
+### `CondoWebAppGetActiveProgressBars`
+
+Retrieves all progress bars currently visible in the host for this mini-app.
+
+**Params**
+
+None.
+
+**Response**
+
+<ResponseField name="bars" type="object[]">
+  Array of active progress bar descriptors.
+  <Expandable title="bar fields">
+    <ResponseField name="id" type="string">Bar identifier.</ResponseField>
+    <ResponseField name="message" type="string">Current label.</ResponseField>
+    <ResponseField name="description" type="string">Current description.</ResponseField>
+    <ResponseField name="progress" type="number">Current progress value.</ResponseField>
+    <ResponseField name="externalTaskId" type="string">External task ID, if provided at creation.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+```typescript
+const { bars } = await bridge.send('CondoWebAppGetActiveProgressBars')
+bars.forEach((bar) => console.log(bar.id, bar.progress))
+```
+
+---
+
+## Incoming events
+
+The host can push events to the mini-app at any time. Subscribe with `bridge.subscribe` to receive them.
+
+### `CondoWebAppActionClickEvent`
+
+Fired when the user clicks an action button registered with `CondoWebAppSetPageActions`.
+
+```typescript
+bridge.subscribe((event) => {
+  if (event.type === 'CondoWebAppActionClickEvent') {
+    const { actionId } = event.data
+    // Route to the handler for this action
+  }
+})
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `actionId` | `string` | ID of the action that was clicked. |
+
+---
+
+## Error handling
+
+When `bridge.send` rejects, the error object contains the following fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `errorType` | `'client'` | Always `'client'` for errors generated by the bridge or the host. |
+| `errorReason` | `string` | Machine-readable reason code. |
+| `errorCode` | `number` | Numeric code corresponding to the reason. |
+| `errorMessage` | `string` | Human-readable description. |
+
+**Error reasons**
+
+| `errorReason` | Code | Meaning |
+|---|---|---|
+| `ACCESS_DENIED` | 0 | The mini-app does not have permission to call this method. |
+| `UNKNOWN_ERROR` | 1 | An unexpected error occurred in the host. |
+| `UNKNOWN_METHOD` | 2 | The method name is not recognised by the host. |
+| `INVALID_PARAMETERS` | 3 | Required parameters are missing or have the wrong type. |
+| `HANDLER_ERROR` | 4 | The host handler threw an error. |
+| `TIMEOUT_REACHED` | 5 | No response was received within the timeout period. |
+
+```typescript
+try {
+  await bridge.send('CondoWebAppResizeWindow', { height: 400 })
+} catch (err) {
+  if (err.errorReason === 'TIMEOUT_REACHED') {
+    // Host did not respond in time
+  }
+}
+```

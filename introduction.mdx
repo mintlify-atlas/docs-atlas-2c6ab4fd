@@ -1,0 +1,78 @@
+---
+title: "Introduction"
+description: "Open source property management SaaS for managing tickets, residents, properties, billing, and a service marketplace."
+---
+
+# Welcome to Condo
+
+Condo is an open source property management platform that gives property managers and HOAs a unified workspace to handle everything from maintenance tickets to resident billing — with a powerful mini-app extension system for building custom integrations.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Set up your local development environment and launch Condo in minutes.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Understand the monorepo structure, tech stack, and how apps and packages relate.
+  </Card>
+  <Card title="Core Features" icon="star" href="/features/tickets">
+    Explore ticket management, billing, resident contacts, and the service marketplace.
+  </Card>
+  <Card title="Mini-Apps" icon="puzzle-piece" href="/miniapps/overview">
+    Extend Condo with custom mini-applications using the Bridge API.
+  </Card>
+</CardGroup>
+
+## What Condo does
+
+Condo is a full-stack SaaS platform designed for property management companies and organizations managing shared properties — condominiums, residential complexes, and commercial buildings.
+
+<CardGroup cols={3}>
+  <Card title="Ticket Management" icon="ticket">
+    Track and resolve maintenance requests, resident complaints, and service issues with a structured ticketing system.
+  </Card>
+  <Card title="Resident CRM" icon="users">
+    Manage resident contacts, unit assignments, and communication history in one place.
+  </Card>
+  <Card title="Property Management" icon="building">
+    Maintain a structured registry of properties, buildings, and units with address resolution.
+  </Card>
+  <Card title="Billing & Payments" icon="credit-card">
+    Track payments, create invoices, and manage acquiring integrations for online payments.
+  </Card>
+  <Card title="News & Notifications" icon="bell">
+    Send targeted news and notifications to residents via multiple channels.
+  </Card>
+  <Card title="Service Marketplace" icon="store">
+    Oversee a marketplace of service providers available to residents and property managers.
+  </Card>
+</CardGroup>
+
+## Extension system
+
+Condo's mini-app system lets developers build embedded web applications that run inside the main Condo client. Mini-apps communicate with the host application using the `@open-condo/bridge` library and can be distributed through the Condo marketplace.
+
+```typescript
+import bridge from '@open-condo/bridge'
+
+// Resize the mini-app window
+await bridge.send('CondoWebAppResizeWindow', { height: 800 })
+
+// Subscribe to events from the host
+bridge.subscribe((event) => {
+  const { type, data } = event
+  console.log('Received:', type, data)
+})
+```
+
+## Open source & self-hostable
+
+Condo is MIT licensed and designed for self-hosting. The monorepo contains 30+ specialized applications and a set of shared packages — all deployable via Docker Compose or custom infrastructure.
+
+<CardGroup cols={2}>
+  <Card title="Deploy with Docker" icon="docker" href="/deployment/docker">
+    Run Condo in production using the included Docker Compose configuration.
+  </Card>
+  <Card title="Webhooks & GraphQL API" icon="webhook" href="/integrations/graphql/overview">
+    Integrate with external systems using the GraphQL API and webhook system.
+  </Card>
+</CardGroup>

@@ -1,0 +1,131 @@
+---
+title: "Residents & Contacts"
+description: "Manage resident identities, link them to properties and units, and communicate with them through every notification channel."
+---
+
+The **Contact** model is Condo's primary record for a person associated with a property. Contacts are created when residents interact with the system — submitting tickets, signing in to the resident app, or being manually added by staff.
+
+<CardGroup cols={2}>
+  <Card title="Contact Records" icon="address-book">
+    Contacts capture name, phone, email, and the unit they occupy within a property.
+  </Card>
+  <Card title="Contact Roles" icon="id-badge">
+    Flexible roles (owner, tenant, etc.) describe a contact's relationship to their unit.
+  </Card>
+  <Card title="Resident App" icon="mobile">
+    Verified residents access a dedicated mobile app where they submit tickets and receive notifications.
+  </Card>
+  <Card title="Notifications" icon="bell">
+    Push, SMS, email, and Telegram messages keep residents informed at every stage.
+  </Card>
+</CardGroup>
+
+## The Contact Model
+
+A `Contact` record links a person to a specific unit within a property. Key fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `organization` | Relationship | The managing organization |
+| `property` | Relationship | The property this contact belongs to |
+| `unitName` | Text | Apartment or premises identifier (e.g., `"42"`) |
+| `unitType` | Select | Type of unit (flat, parking, warehouse, etc.) |
+| `name` | Text | Contact's full name |
+| `phone` | Text | Normalized E.164 phone number |
+| `email` | Text | Normalized email address |
+| `role` | Relationship | Assigned `ContactRole` (e.g., owner, tenant) |
+
+<Note>
+  Phone and email are stored as **sensitive fields**. Phone numbers are normalized to E.164 format; email addresses are lowercased and trimmed automatically.
+</Note>
+
+### Uniqueness
+
+Contacts are deduplicated by a composite unique constraint on `(property, unitName, name, phone)`. Attempting to create a duplicate contact returns a `CONTACT_DUPLICATE_ERROR`.
+
+## Contact Roles
+
+`ContactRole` records let organizations define custom relationship labels for contacts. Built-in roles (owner, tenant, etc.) are shared across all organizations; organizations can also create their own.
+
+Roles are displayed on ticket forms and contact detail pages so staff immediately understand a resident's relationship to the property.
+
+## Resident Verification & Identity
+
+When a resident signs into the mobile app, Condo:
+
+<Steps>
+  <Step title="Verify Phone">
+    An SMS verification code (`SMS_VERIFY`) is sent to the resident's phone. On success, a `User` record with type `resident` is created or linked.
+  </Step>
+  <Step title="Link to Property & Unit">
+    The resident provides their property address and unit number. Condo looks up or creates a matching `Contact` record.
+  </Step>
+  <Step title="Create Resident Record">
+    A `Resident` object ties the `User` to the `Property` and `unitName`/`unitType`. This enables targeted notifications and billing receipt access.
+  </Step>
+  <Step title="Sync Contacts">
+    The `_internalSyncContactsWithResidentsForOrganization` service keeps `Contact` records in sync with verified `Resident` registrations across all organizations managing that property.
+  </Step>
+</Steps>
+
+## Resident App Integration
+
+Verified residents interact with Condo through the **resident mobile app** (`apps/resident-app`). Through the app, residents can:
+
+- Submit new tickets and track their status
+- Leave feedback on completed work
+- View billing receipts and pay charges
+- Receive push notifications for ticket updates, billing alerts, and news items
+- Browse the service marketplace and receive invoices
+
+The app identifies a resident by matching their `User` account to a `Resident` record, which in turn references a `Property` and unit.
+
+## Communication with Residents
+
+Condo sends notifications to residents across multiple channels:
+
+<CardGroup cols={2}>
+  <Card title="Push Notifications" icon="bell">
+    Delivered via Firebase (Android), Apple Push Notification Service (iOS), or RedStore. Requires the resident to have the mobile app installed and a registered `RemoteClient`.
+  </Card>
+  <Card title="SMS" icon="message">
+    Sent via configured SMS transport adapters. Used for verification codes and urgent alerts.
+  </Card>
+  <Card title="Email" icon="envelope">
+    HTML email notifications for billing receipts, ticket updates, and account actions.
+  </Card>
+  <Card title="Telegram" icon="paper-plane">
+    Optional Telegram bot integration via `TelegramUserChat` for residents who prefer the channel.
+  </Card>
+</CardGroup>
+
+### Notification Preferences
+
+Residents can control which notifications they receive via `NotificationUserSetting`. Organizations can also manage opt-outs at scale using:
+
+- `MessageUserBlackList` — Per-user opt-out for specific message types
+- `MessageOrganizationBlackList` — Organization-wide suppression rules
+- `NotificationAnonymousSetting` — Settings for unregistered (anonymous) recipients
+
+## Exporting Contacts
+
+Property managers can export the full contacts list using `ContactExportTask`, which produces an Excel file with all contacts and their associated properties, units, and roles.
+
+## Key Relationships
+
+```
+Contact
+  └── property  → Property
+  └── unitName / unitType  → specific unit
+  └── role  → ContactRole
+  └── organization  → Organization
+
+Resident (verified app user)
+  └── user  → User (type: resident)
+  └── property  → Property
+  └── unitName / unitType
+```
+
+<Tip>
+  A single `Contact` record may exist before a resident has registered in the app (created manually by staff). Once the resident signs in, their `User` account is linked and the contact is promoted to a verified `Resident`.
+</Tip>

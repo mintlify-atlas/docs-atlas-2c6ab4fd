@@ -1,0 +1,215 @@
+---
+title: "Architecture"
+description: "An overview of Condo's monorepo structure, tech stack, and how applications and packages are organized."
+---
+
+Condo is structured as a **Yarn workspaces monorepo** orchestrated by [Turbo](https://turbo.build/repo). It contains 30+ independent applications and a set of shared internal packages. Apps cannot import code from each other — shared logic lives exclusively in `packages/`.
+
+## Tech stack
+
+<CardGroup cols={3}>
+  <Card title="KeystoneJS 5" icon="key">
+    Backend framework that generates a GraphQL API from schema definitions. Each domain model is defined as a Keystone list.
+  </Card>
+  <Card title="Next.js" icon="n">
+    React-based frontend framework used for all server-rendered and client-side pages inside each Keystone app.
+  </Card>
+  <Card title="Apollo GraphQL" icon="circle-nodes">
+    Apollo Client on the frontend and Apollo Server (via Keystone) on the backend. All data flows through GraphQL.
+  </Card>
+  <Card title="PostgreSQL 16" icon="database">
+    Primary relational database. Each application has its own database. Migrations are managed by `kmigrator`, a Django-based tool.
+  </Card>
+  <Card title="Redis 6.2" icon="layer-group">
+    Used for session storage, asynchronous task queuing (via Bull), and caching.
+  </Card>
+  <Card title="Bull" icon="list-check">
+    Redis-backed task queue for asynchronous background jobs: notifications, imports, exports, and other long-running operations.
+  </Card>
+  <Card title="Turbo" icon="bolt">
+    Monorepo build orchestration. Manages task pipelines, caching, and parallel execution across workspaces.
+  </Card>
+  <Card title="Docker" icon="docker">
+    Containerization for both local development (databases) and production deployment (full application stack).
+  </Card>
+  <Card title="Jest" icon="vial">
+    Test runner with Jasmine2. Supports schema integration tests (`.test.js`) and unit tests (`.spec.ts`).
+  </Card>
+</CardGroup>
+
+## Monorepo layout
+
+```
+condo/
+├── apps/          # Independent application services
+├── packages/      # Shared internal libraries
+├── bin/           # Build and utility scripts
+├── docs/          # Project-level documentation
+├── turbo.json     # Turbo pipeline configuration
+└── package.json   # Root workspace configuration
+```
+
+### apps/
+
+Each directory under `apps/` is a standalone service with its own database, environment variables, and deployment unit. Applications **cannot** import from each other.
+
+| App | Description |
+|-----|-------------|
+| `condo` | Main property management application (KeystoneJS + Next.js) |
+| `resident-app` | Resident-facing mobile/web application |
+| `dev-portal-web` | Developer portal frontend |
+| `dev-portal-api` | Developer portal API service |
+| `address-service` | Address resolution and normalization service |
+| `billing-connector` | Billing system integration |
+| `callcenter` | Call center service |
+| `pos-integration` | Point-of-sale integration |
+| `miniapp` | Mini-app hosting service |
+| `news-greenhouse` | News distribution service |
+| `property-importer` | Property data import service |
+| `ticket-importer` | Ticket data import service |
+| `telephony` | Telephony integration |
+| `insurance` | Insurance integration |
+| `accruals-gateway` | Accruals gateway service |
+| `announcements` | Announcements service |
+
+<Note>
+  The monorepo contains 30+ apps in total. The table above lists the most prominent ones.
+</Note>
+
+### packages/
+
+Shared internal libraries that any app can depend on. All packages are published under the `@open-condo/*` scope.
+
+| Package | Description |
+|---------|-------------|
+| `@open-condo/ui` | UI component kit — the recommended way to build all GUI elements |
+| `@open-condo/icons` | Icon library used across all applications |
+| `@open-condo/keystone` | Keystone utilities: schema helpers, logging, test utilities |
+| `@open-condo/bridge` | Communication bridge for mini-app ↔ host integration |
+| `@open-condo/webhooks` | Reusable webhook functionality for any app |
+| `@open-condo/miniapp-utils` | Utilities for building mini-applications |
+| `@open-condo/apollo` | Apollo client configuration and utilities |
+| `@open-condo/billing` | Shared billing utilities |
+| `@open-condo/config` | Configuration and environment variable utilities |
+| `@open-condo/codegen` | GraphQL code generation tooling |
+| `@open-condo/locales` | Internationalization and locale data |
+| `@open-condo/messaging` | Messaging abstractions |
+| `@open-condo/featureflags` | Feature flag utilities |
+| `@open-condo/next` | Next.js configuration and shared page utilities |
+| `@open-condo/files` | File upload and storage utilities |
+| `@open-condo/migrator` | Database migration tooling |
+
+## The main app: apps/condo
+
+`apps/condo` is the core property management application. It uses a **domain-driven design** structure where all business logic is organized into domain directories.
+
+### Domain structure
+
+```
+apps/condo/domains/
+├── ticket/        # Maintenance request ticketing
+├── billing/       # Payment tracking and invoices
+├── contact/       # Resident contact management
+├── property/      # Property and unit registry
+├── organization/  # Organization and employee management
+├── user/          # User accounts and authentication
+├── notification/  # Push and messaging notifications
+├── news/          # News posts and distributions
+├── miniapp/       # Mini-app registry and management
+├── marketplace/   # Service provider marketplace
+├── meter/         # Utility meter readings
+├── resident/      # Resident-specific data
+├── scope/         # Access scope management
+├── settings/      # Application settings
+├── onboarding/    # Onboarding flows
+├── analytics/     # Analytics and reporting
+├── banking/       # Banking integrations
+├── subscription/  # Subscription management
+├── document/      # Document management
+├── acquiring/     # Payment acquiring integrations
+├── ai/            # AI-assisted features
+└── common/        # Shared components and utilities
+```
+
+Each domain follows a consistent internal layout:
+
+```
+<domain>/
+├── constants/     # Shared constants (client + server)
+├── gql/           # GraphQL queries and mutations
+├── components/    # React components (client)
+├── schema/        # KeystoneJS list definitions (server)
+├── access/        # Keystone access control (server)
+└── utils/
+    ├── clientSchema/  # Client-side schema utilities
+    └── serverSchema/  # Server-side schema utilities
+```
+
+## How apps communicate
+
+Apps in the monorepo are isolated services. They communicate at runtime through **GraphQL APIs** — each app exposes its own Keystone-generated GraphQL endpoint.
+
+```
+┌─────────────────────┐     GraphQL      ┌──────────────────────┐
+│   apps/condo        │ ───────────────► │  apps/address-service│
+│   (main app)        │                  │  apps/billing-connector│
+└─────────────────────┘                  └──────────────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│   PostgreSQL        │  (per-app database)
+│   Redis             │  (sessions, queues, cache)
+└─────────────────────┘
+```
+
+<Note>
+  Because apps cannot share code directly, any logic needed by multiple apps must be extracted into a package under `packages/` and published as an internal workspace dependency.
+</Note>
+
+## Turbo build pipeline
+
+Turbo orchestrates the build pipeline defined in `turbo.json`. Tasks declare their dependencies using `^` notation — for example, `build` depends on `^build`, which means all upstream workspace dependencies must be built first.
+
+```json
+{
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [".next/**", "dist/**", "build/**"]
+    }
+  }
+}
+```
+
+This is why running `yarn workspace @app/condo build:deps` before starting the app is required — it triggers Turbo to build all packages that `@app/condo` depends on, in topological order.
+
+## Database and migrations
+
+Each app manages its own database schema. Migrations are created and applied using `kmigrator`, a wrapper around the Django migration system:
+
+```bash
+# Apply pending migrations
+yarn workspace @app/condo migrate
+
+# Create new migrations after schema changes
+yarn workspace @app/condo makemigrations
+```
+
+The migration tool requires Python 3 with `Django` and `psycopg2-binary` installed.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Set up your local development environment and run Condo for the first time.
+  </Card>
+  <Card title="Project structure" icon="folder-open" href="/developer/project-structure">
+    Deep dive into the domain-driven design structure inside `apps/condo`.
+  </Card>
+  <Card title="Mini-Apps" icon="puzzle-piece" href="/miniapps/overview">
+    Learn how to build mini-applications that extend Condo using the Bridge API.
+  </Card>
+  <Card title="GraphQL API" icon="circle-nodes" href="/integrations/graphql/overview">
+    Explore the GraphQL API exposed by each Keystone application.
+  </Card>
+</CardGroup>

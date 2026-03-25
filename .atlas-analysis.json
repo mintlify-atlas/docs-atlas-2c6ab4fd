@@ -1,28 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "Condo",
+  "projectType": "saas",
+  "projectName": "Condo",
+  "projectDescription": "An open source property management SaaS platform for managing tickets, residents, properties, billing, invoices, and a service marketplace, with an extension system for mini-apps.",
   "theme": "linden",
-  "colors": {
-    "primary": "#848c8e",
-    "light": "#11161e",
-    "dark": "#cfd0d2"
-  },
-  "favicon": "https://media.brand.dev/2b01fe20-c04b-4a1d-a2f9-1d2789c50a7a.jpg",
-  "logo": {
-    "light": "https://media.brand.dev/5ffd6ce4-2434-4b4b-920a-f8cacac8b48b.svg",
-    "dark": "https://media.brand.dev/5ffd6ce4-2434-4b4b-920a-f8cacac8b48b.svg"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/open-condo-software/condo"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/open-condo-software/condo"
-    }
-  },
+  "primaryColor": "#848c8e",
+  "lightColor": "#11161e",
+  "darkColor": "#cfd0d2",
   "navigation": {
     "tabs": [
       {
@@ -104,5 +87,30 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Ticket management system for property issues and requests",
+    "Resident and contact management",
+    "Property and building management",
+    "Billing, payment tracking, and invoice creation",
+    "Service marketplace oversight",
+    "News and resident notifications",
+    "Mini-app extension system with bridge API",
+    "GraphQL API powered by KeystoneJS",
+    "Webhook integrations for event-driven workflows",
+    "Multi-app monorepo with 30+ specialized services"
+  ],
+  "publicApiSurface": [
+    "bridge.send(method, params) — Send events from mini-app to Condo client",
+    "bridge.subscribe(listener) — Subscribe to Condo client events",
+    "bridge.unsubscribe(listener) — Unsubscribe from Condo client events",
+    "bridge.supports(method) — Check if method is supported by current client",
+    "@open-condo/webhooks — Webhook integration package for Keystone apps",
+    "@open-condo/miniapp-utils — Helper functions, hooks, and components for mini-apps",
+    "@open-condo/ui — UI component library",
+    "@open-condo/icons — Icon library",
+    "GraphQL API (KeystoneJS) — Full CRUD API for all domain models",
+    "getWebhookModels(schemaPath) — Register webhook schemas",
+    "webHooked plugin — Add webhook support to any Keystone model"
+  ]
 }
